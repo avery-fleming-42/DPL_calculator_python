@@ -1,5 +1,6 @@
 import math
 import pandas as pd
+from data_access import get_case_table
 
 def A11X_outputs(inputs, data):
     """

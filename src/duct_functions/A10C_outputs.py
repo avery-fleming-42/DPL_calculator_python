@@ -1,14 +1,15 @@
 import math
 import pandas as pd
 import numpy as np
+from data_access import get_case_table
 
-def A10C_outputs(stored_values, data):
+
+def A10C_outputs(stored_values, *_):
     """
     Calculates the outputs for case A10C (converging junctions) for both branch and main.
 
     Parameters:
     - stored_values: Dictionary containing user inputs (e.g., entry_1, entry_2, etc.).
-    - data: DataFrame containing relevant data for the calculations.
 
     Returns:
     - Dictionary of calculated outputs for both branch and main OR an error message if conditions are not met.
@@ -26,7 +27,7 @@ def A10C_outputs(stored_values, data):
 
         # Calculate cross-sectional areas (ft²)
         area_main = (entry_1 * entry_2) / 144  # Main area Ac
-        area_branch = area_main / 2            # Branch area Ab (given as Ab = Ac / 2)
+        area_branch = area_main / 2.0          # Branch area Ab (given as Ab = Ac / 2)
 
         # Calculate flow rates
         Q_source = entry_3  # Source flow rate
@@ -44,10 +45,18 @@ def A10C_outputs(stored_values, data):
 
         # --- ERROR CHECK: Qb/Qs must be >= 0.4 ---
         if qb_qs_ratio < 0.4:
-            return {"Error": "Invalid Input: Qb/Qs must be at least 0.4. Increase branch flow rate (Qb) or decrease source flow rate (Qs)."}
+            return {
+                "Error": (
+                    "Invalid Input: Qb/Qs must be at least 0.4. "
+                    "Increase branch flow rate (Qb) or decrease source flow rate (Qs)."
+                )
+            }
 
-        # --- Branch Loss Coefficient ---
-        branch_data = data.loc["A10C"]
+        # ========================
+        #   BRANCH LOSS COEFF
+        # ========================
+        # Load case-specific data for A10C and filter to PATH == 'branch'
+        branch_data = get_case_table("A10C")
         branch_data = branch_data[branch_data["PATH"] == "branch"]
 
         # Find closest match on Vc (round down)
@@ -60,47 +69,58 @@ def A10C_outputs(stored_values, data):
 
         branch_loss_coefficient = branch_qb_qc_row["C"]
 
-        # --- Main Loss Coefficient ---
-        main_data = data.loc["A10M"]
-        main_data = main_data[main_data["PATH"] == "main"]
+        # =====================
+        #   MAIN LOSS COEFF
+        # =====================
+        # Load case-specific data for A10M and filter to PATH == 'main'
+        main_data = get_case_table("A10M")
+        main_data = main_data[main_data["PATH"] == "main"].copy()
 
         # Assume fixed ratios for this case
         as_ac_ratio = 1.0
         ab_ac_ratio = 0.5
 
-        main_data["As/Ac Diff"] = abs(main_data["As/Ac"] - as_ac_ratio)
+        # Match As/Ac (closest)
+        main_data["As/Ac Diff"] = (main_data["As/Ac"] - as_ac_ratio).abs()
         main_as_ac_row = main_data.loc[main_data["As/Ac Diff"].idxmin()]
 
+        # Match Ab/Ac (round up)
         valid_ab_ac = main_data[main_data["Ab/Ac"] >= ab_ac_ratio]
         main_ab_ac_row = valid_ab_ac.iloc[0] if not valid_ab_ac.empty else main_data.iloc[-1]
 
+        # Match Qb/Qs (round down)
         valid_qb_qs = main_data[main_data["Qb/Qs"] <= qb_qs_ratio]
         main_qb_qs_row = valid_qb_qs.iloc[-1] if not valid_qb_qs.empty else main_data.iloc[0]
 
+        # For now we keep using the coefficient keyed by Qb/Qs, as in your original code
         main_loss_coefficient = main_qb_qs_row["C"]
 
-        # --- Velocity Pressures ---
+        # =====================
+        #   VELOCITY PRESSURES
+        # =====================
         branch_velocity_pressure = (velocity_branch / 4005) ** 2
         source_velocity_pressure = (velocity_source / 4005) ** 2
         converged_velocity_pressure = (velocity_converged / 4005) ** 2
 
-        # --- Pressure Losses ---
+        # =====================
+        #   PRESSURE LOSSES
+        # =====================
         branch_pressure_loss = branch_loss_coefficient * branch_velocity_pressure
         main_pressure_loss = main_loss_coefficient * source_velocity_pressure
 
         # --- Build Outputs Dictionary ---
         outputs = {}
 
+        # Branch outputs
         outputs.update({
-            # Branch outputs
             "Branch Velocity (ft/min)": velocity_branch,
             "Branch Velocity Pressure (in w.c.)": branch_velocity_pressure,
             "Branch Loss Coefficient": branch_loss_coefficient,
             "Branch Pressure Loss (in w.c.)": branch_pressure_loss,
         })
 
+        # Main outputs
         outputs.update({
-            # Main outputs
             "Main, Source Velocity (ft/min)": velocity_source,
             "Main, Converged Velocity (ft/min)": velocity_converged,
             "Main, Source Velocity Pressure (in w.c.)": source_velocity_pressure,
@@ -114,6 +134,6 @@ def A10C_outputs(stored_values, data):
     except Exception as e:
         return {"Error": str(e)}
 
+
 # Specify case type
 A10C_outputs.output_type = "branch_main"
-print("[DEBUG] A10C_outputs module loaded, output_type =", A10C_outputs.output_type)

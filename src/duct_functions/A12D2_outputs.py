@@ -1,6 +1,7 @@
 import math
 import pandas as pd
 import numpy as np
+from data_access import get_case_table
 
 def A12D2_outputs(stored_values, data):
     """

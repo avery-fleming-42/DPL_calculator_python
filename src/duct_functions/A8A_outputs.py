@@ -1,8 +1,9 @@
 import math
 import pandas as pd
 import numpy as np
+from data_access import get_case_table
 
-def A8A_outputs(stored_values, data):
+def A8A_outputs(stored_values, *_):
     """
     Calculates the outputs for case A8A using the stored input values, including
     Reynolds number and loss coefficient.
@@ -24,10 +25,8 @@ def A8A_outputs(stored_values, data):
     if not all([entry_1, entry_2, entry_3, entry_4]):
         return {f"Output {i+1}": None for i in range(4)}
 
-    # Ensure `data` contains the necessary index
-    if "A8A" not in data.index:
-        raise KeyError("Data must include 'A8A' index for calculations.")
-    df = data.loc["A8A"]
+    # Get the relevant data for A8A
+    df = get_case_table("A8A")
 
     # Calculate velocity
     area = math.pi * (entry_1 / 2) ** 2 / 144  # Area in square feet

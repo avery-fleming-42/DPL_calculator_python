@@ -1,8 +1,9 @@
 import math
 import pandas as pd
 import numpy as np
+from data_access import get_case_table
 
-def A8G_outputs(stored_values, data):
+def A8G_outputs(stored_values, *_):
     """
     Calculates the outputs for case A8G using the stored input values.
 
@@ -24,10 +25,8 @@ def A8G_outputs(stored_values, data):
     if not all([entry_1, entry_2, entry_3, entry_4, entry_5]):
         return {f"Output {i+1}": None for i in range(4)}
 
-    # Ensure `data` contains the necessary index
-    if "A8G" not in data.index:
-        raise KeyError("Data must include 'A8G' index for calculations.")
-    df = data.loc["A8G"]
+    # Get the relevant data for A8G
+    df = get_case_table("A8G")
 
     # Calculate velocity
     area = (entry_1 * entry_3) / 144  # Area in square feet

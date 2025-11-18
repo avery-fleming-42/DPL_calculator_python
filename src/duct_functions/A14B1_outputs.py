@@ -1,5 +1,6 @@
 import math
 import pandas as pd
+from data_access import get_case_table
 
 
 def A14B1_outputs(stored_values, data):

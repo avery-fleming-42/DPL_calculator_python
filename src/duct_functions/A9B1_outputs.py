@@ -1,8 +1,9 @@
 import math
 import pandas as pd
 import numpy as np
+from data_access import get_case_table
 
-def A9B1_outputs(stored_values, data):
+def A9B1_outputs(stored_values, *_):
     """
     Calculates the outputs for case A9B1 using the stored input values.
 
@@ -24,10 +25,8 @@ def A9B1_outputs(stored_values, data):
     if not all([entry_1, entry_2, entry_3, entry_4, entry_5]):
         return {f"Output {i+1}": None for i in range(4)}
 
-    # Ensure `data` contains the necessary index
-    if "A9B1" not in data.index:
-        raise KeyError("Data must include 'A9B1' index for calculations.")
-    df = data.loc["A9B1"]
+    # Get the relevant data for A9B1
+    df = get_case_table("A9B1")
 
     # Calculate velocity using downstream diameter (D₁)
     area = math.pi * (entry_1 / 2) ** 2 / 144  # Area in square feet

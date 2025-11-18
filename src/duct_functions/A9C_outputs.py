@@ -1,8 +1,9 @@
 import math
 import pandas as pd
 import numpy as np
+from data_access import get_case_table
 
-def A9C_outputs(stored_values, data):
+def A9C_outputs(stored_values, *_):
     """
     Calculates the outputs for case A9C using the stored input values.
 
@@ -23,10 +24,8 @@ def A9C_outputs(stored_values, data):
     if not all([entry_1, entry_2, entry_3, entry_4]):
         return {f"Output {i+1}": None for i in range(5)}
 
-    # Ensure `data` contains the necessary index
-    if "A9C" not in data.index:
-        raise KeyError("Data must include 'A9C' index for calculations.")
-    df = data.loc["A9C"]
+    # Get the relevant data for A9C
+    df = get_case_table("A9C")
 
     # Calculate cross-sectional areas
     area_round = math.pi * (entry_1 / 2) ** 2 / 144  # Area of round section in square feet

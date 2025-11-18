@@ -1,8 +1,9 @@
 import math
 import pandas as pd
 import numpy as np
+from data_access import get_case_table
 
-def A8C_outputs(stored_values, data):
+def A8C_outputs(stored_values, *_):
     """
     Calculates the outputs for case A8C (Round to Rectangular Expansion).
     """
@@ -15,10 +16,8 @@ def A8C_outputs(stored_values, data):
     if not all([entry_1, entry_2, entry_3, entry_4, entry_5]):
         return {f"Output {i+1}": None for i in range(4)}
 
-    if "A8B" not in data.index:
-        raise KeyError("Data must include 'A8B' index for calculations.")
-
-    df = data.loc["A8B"]
+    # Get the relevant data for A8C (which is A8B)
+    df = get_case_table("A8B")
 
     # Areas
     area_round = math.pi * (entry_3 / 2) ** 2 / 144  # ft²

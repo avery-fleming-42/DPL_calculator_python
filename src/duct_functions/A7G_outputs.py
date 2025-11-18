@@ -1,8 +1,9 @@
 import math
 import pandas as pd
 import numpy as np
+from data_access import get_case_table
 
-def A7G_outputs(stored_values, data):
+def A7G_outputs(stored_values, *_):
     """
     Calculates the outputs for case A7G using the stored input values, including
     Reynolds Number Correction Factor (RNCF) and SMACNA Angle Correction Factor.
@@ -26,10 +27,8 @@ def A7G_outputs(stored_values, data):
     if not all([entry_1, entry_2, entry_3, entry_4, entry_5, entry_6]):
         return {f"Output {i+1}": None for i in range(4)}
 
-    # Ensure `data` contains the necessary index
-    if "A7G" not in data.index:
-        raise KeyError("Data must include 'A7G' index for calculations.")
-    df = data.loc["A7G"]
+    # Get the relevant data for A7G
+    df = get_case_table("A7G")
 
     # Calculate velocity
     area = (entry_1 * entry_2) / 144  # Area in square feet

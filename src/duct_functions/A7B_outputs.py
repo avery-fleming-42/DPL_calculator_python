@@ -1,8 +1,9 @@
 import math
 import pandas as pd
 import numpy as np
+from data_access import get_case_table
 
-def A7B_outputs(stored_values, data):
+def A7B_outputs(stored_values, *_):
     """
     Calculates the outputs for case A7B using the stored input values, including
     Reynolds Number Correction Factor (RNCF).
@@ -23,8 +24,8 @@ def A7B_outputs(stored_values, data):
             "Output 4: Pressure Loss (in w.c.)": None,
         }
 
-    # Get A7B-specific data
-    df = data.loc["A7B"]
+    # Get the relevant data for A7B
+    df = get_case_table("A7B")
 
     # Calculate velocity
     area = math.pi * (entry_1 / 2) ** 2  # Cross-sectional area in square inches
