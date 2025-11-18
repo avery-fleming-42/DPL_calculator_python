@@ -52,8 +52,8 @@ def A15E_outputs(stored_values, data):
 
         print(f"[DEBUG] Area = {A:.2f} in², Velocity = {V:.2f} ft/min, L/R = {L_R:.4f}")
 
-        # Look up loss coefficient from Excel data
-        df = data.loc["A15E"][["L/R", "ANGLE", "C"]].dropna()
+        # Look up loss coefficient from centralized case table
+        df = get_case_table("A15E")[["L/R", "ANGLE", "C"]].dropna()
 
         LR_vals = sorted(df["L/R"].unique())
         angle_vals = sorted(df["ANGLE"].unique())
@@ -65,7 +65,7 @@ def A15E_outputs(stored_values, data):
 
         matched_row = df[(df["L/R"] == LR_match) & (df["ANGLE"] == angle_match)]
         if matched_row.empty:
-            return {"Error": "No matching L/R and ANGLE pair found in data."}
+            return {"Error": "No matching L/R and ANGLE pair found in A15E data."}
 
         C = matched_row["C"].values[0]
         pressure_loss = C * vp

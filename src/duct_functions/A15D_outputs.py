@@ -46,7 +46,8 @@ def A15D_outputs(stored_values, data):
         h_H = h / H
         print(f"[DEBUG] Area = {A:.2f}, Velocity = {V:.2f}, H/W = {H_W:.3f}, h/H = {h_H:.3f}")
 
-        df = data.loc["A15D"][["H/W", "h/H", "C"]].dropna()
+        # Use centralized loader instead of `data.loc[...]`
+        df = get_case_table("A15D")[["H/W", "h/H", "C"]].dropna()
 
         # Nearest match for H/W
         HW_vals = df["H/W"].unique()
@@ -60,7 +61,7 @@ def A15D_outputs(stored_values, data):
 
         matched_row = df[(df["H/W"] == HW_match) & (df["h/H"] == hH_match)]
         if matched_row.empty:
-            return {"Error": "No matching H/W and h/H pair found in data."}
+            return {"Error": "No matching H/W and h/H pair found in A15D data."}
 
         C = matched_row["C"].values[0]
         pressure_loss = C * vp

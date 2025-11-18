@@ -4,10 +4,11 @@ from data_access import get_case_table
 
 def A13G_outputs(stored_values, data):
     """
-    Calculates outputs for case A13G (rectangular exit with varying height and width), accounting for:
-    - area ratio (H1*W / H*W)
-    - angle (rounded up)
-    - optional obstruction (screen) with correction factor from A14A1
+    Calculates outputs for case A13G (rectangular exit with varying height and width),
+    using:
+      • A1/A area ratio
+      • angle rounded UP
+      • optional screen correction from A14A1
     """
 
     # Extract inputs
@@ -17,7 +18,7 @@ def A13G_outputs(stored_values, data):
     angle = stored_values.get("entry_4")
     Q = stored_values.get("entry_5")
     obstruction = stored_values.get("entry_6")
-    n = stored_values.get("entry_7")  # screen free area ratio (optional)
+    n = stored_values.get("entry_7")
 
     print("[DEBUG] Inputs:")
     print(f"  H = {H}, W = {W}, H1 = {H1}, angle = {angle}, Q = {Q}, obstruction = {obstruction}, n = {n}")
@@ -32,20 +33,23 @@ def A13G_outputs(stored_values, data):
         }
 
     try:
+        # Geometry + velocity
         A = H * W
-        V = Q / (A / 144)  # ft/min
-
+        V = Q / (A / 144)
+        vp = (V / 4005) ** 2
         area_ratio = (H1 * W) / (H * W)
 
         print(f"[DEBUG] Computed: Area = {A}, Velocity = {V:.2f}, Area Ratio = {area_ratio:.4f}")
 
-        # Base coefficient from A13G
-        df = data.loc["A13G"]
+        # === Base data reference (UPDATED) ===
+        df = get_case_table("A13G")
         df = df[["ANGLE", "A1/A", "C"]].dropna()
 
+        # Angle match (round up)
         angle_vals = df["ANGLE"].unique()
         angle_match = min([val for val in angle_vals if val >= angle], default=max(angle_vals))
 
+        # Area ratio match (round down within angle group)
         area_vals = df[df["ANGLE"] == angle_match]["A1/A"].unique()
         area_match = max([val for val in area_vals if val <= area_ratio], default=min(area_vals))
 
@@ -56,17 +60,20 @@ def A13G_outputs(stored_values, data):
         C = matched_row["C"].values[0]
         print(f"[DEBUG] Base coefficient C = {C} (angle = {angle_match}, A1/A = {area_match})")
 
-        # Obstruction correction
-        if obstruction == "screen" and n is not None:
-            df_screen = data.loc["A14A1"]
+        # === Screen correction (UPDATED source) ===
+        if isinstance(obstruction, str) and "screen" in obstruction.lower() and n is not None:
+            df_screen = get_case_table("A14A1")
             df_screen = df_screen[["n, free area ratio", "C"]].dropna()
+
             n_vals = df_screen["n, free area ratio"].unique()
             n_match = max([val for val in n_vals if val <= n], default=min(n_vals))
+
             C_screen = df_screen[df_screen["n, free area ratio"] == n_match]["C"].values[0]
             print(f"[DEBUG] Screen C = {C_screen}")
+
+            # Apply the standard screen formula
             C += C_screen / (area_ratio ** 2)
 
-        vp = (V / 4005) ** 2
         total_loss = C * vp
 
         return {

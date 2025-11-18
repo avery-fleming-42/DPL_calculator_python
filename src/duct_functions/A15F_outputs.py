@@ -16,8 +16,8 @@ def A15F_outputs(stored_values, data):
     - Area = H * W
     - Velocity = Q / (A / 144)
     - L/R = (N * W) / (2 * (H + W))
-    - Match L/R (rounded up) to Excel col "L/R"
-    - Match angle (rounded up) to Excel col "ANGLE"
+    - Match L/R (rounded up) to table col "L/R"
+    - Match angle (rounded up) to table col "ANGLE"
     - Lookup "C" for (L/R, ANGLE)
     - Use C to compute pressure loss
     """
@@ -41,16 +41,19 @@ def A15F_outputs(stored_values, data):
         }
 
     try:
+        # Area & velocity
         A = H * W  # in²
         V = Q / (A / 144)  # ft/min
         vp = (V / 4005) ** 2
 
+        # L/R
         perimeter = 2 * (H + W)
         L_R = (N * W) / perimeter
 
         print(f"[DEBUG] Area = {A:.2f} in², Velocity = {V:.2f} ft/min, L/R = {L_R:.4f}")
 
-        df = data.loc["A15F"][["L/R", "ANGLE", "C"]].dropna()
+        # Centralized lookup from case table
+        df = get_case_table("A15F")[["L/R", "ANGLE", "C"]].dropna()
 
         LR_vals = sorted(df["L/R"].unique())
         angle_vals = sorted(df["ANGLE"].unique())
@@ -62,7 +65,7 @@ def A15F_outputs(stored_values, data):
 
         matched_row = df[(df["L/R"] == LR_match) & (df["ANGLE"] == angle_match)]
         if matched_row.empty:
-            return {"Error": "No matching L/R and ANGLE pair found in data."}
+            return {"Error": "No matching L/R and ANGLE pair found in A15F data."}
 
         C = matched_row["C"].values[0]
         pressure_loss = C * vp

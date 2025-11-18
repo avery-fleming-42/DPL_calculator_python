@@ -27,34 +27,50 @@ def A13H_outputs(stored_values, data):
         A = H * W
         A1 = H1 * W1
         V = Q / (A / 144)  # ft/min
-        angle_rounded = min([a for a in data.loc["A13H"]["ANGLE"].unique() if a >= angle], default=max(data.loc["A13H"]["ANGLE"].unique()))
         ratio = A1 / A
 
-        print(f"[DEBUG] Calculated A = {A}, A1 = {A1}, V = {V}, Area Ratio = {ratio}, Rounded Angle = {angle_rounded}")
+        # --- Base table for A13H (UPDATED) ---
+        df_A13H = get_case_table("A13H")
 
-        df = data.loc["A13H"]
-        df = df[df["ANGLE"] == angle_rounded]
+        angle_vals = df_A13H["ANGLE"].dropna().unique()
+        angle_rounded = min(
+            [a for a in angle_vals if a >= angle],
+            default=max(angle_vals)
+        )
+
+        print(f"[DEBUG] Calculated A = {A}, A1 = {A1}, V = {V}, "
+              f"Area Ratio = {ratio}, Rounded Angle = {angle_rounded}")
+
+        df = df_A13H[df_A13H["ANGLE"] == angle_rounded]
 
         ratio_vals = df["A1/A"].dropna().unique()
-        ratio_match = max([val for val in ratio_vals if val <= ratio], default=min(ratio_vals))
+        ratio_match = max(
+            [val for val in ratio_vals if val <= ratio],
+            default=min(ratio_vals)
+        )
 
         print(f"[DEBUG] Matched A1/A = {ratio_match}")
 
-        matched_row = df[(df["A1/A"] == ratio_match)]
+        matched_row = df[df["A1/A"] == ratio_match]
         if matched_row.empty:
             return {"Error": "No matching configuration found in A13H table."}
 
         C = matched_row["C"].values[0]
         print(f"[DEBUG] Base Coefficient C = {C}")
 
-        # Obstruction correction
+        # --- Obstruction correction via A14A1 (UPDATED) ---
         if obstruction == "screen" and n is not None:
-            df_screen = data.loc["A14A1"][["n, free area ratio", "C"]].dropna()
+            df_screen = get_case_table("A14A1")
+            df_screen = df_screen[["n, free area ratio", "C"]].dropna()
             n_vals = df_screen["n, free area ratio"].unique()
-            n_match = max([val for val in n_vals if val <= n], default=min(n_vals))
+            n_match = max(
+                [val for val in n_vals if val <= n],
+                default=min(n_vals)
+            )
             C_screen = df_screen[df_screen["n, free area ratio"] == n_match]["C"].values[0]
             total_loss_coefficient = C + (C_screen / (A1 / A) ** 2)
-            print(f"[DEBUG] Screen C = {C_screen}, Total Loss Coefficient = {total_loss_coefficient}")
+            print(f"[DEBUG] Screen C = {C_screen}, "
+                  f"Total Loss Coefficient = {total_loss_coefficient}")
         else:
             total_loss_coefficient = C
 

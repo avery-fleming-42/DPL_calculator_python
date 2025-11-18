@@ -30,8 +30,8 @@ def A14A1_outputs(stored_values, data):
         V = Q / (A / 144)  # ft/min
         vp = (V / 4005) ** 2
 
-        # Find base coefficient from A14A1 data
-        df = data.loc["A14A1"]
+        # Find base coefficient from A14A1 data (use get_case_table)
+        df = get_case_table("A14A1")
         df = df[["n, free area ratio", "C"]].dropna()
 
         n_vals = df["n, free area ratio"].unique()
@@ -67,5 +67,6 @@ def A14A1_outputs(stored_values, data):
             "Output 4: Pressure Loss": None,
             "Error": str(e),
         }
+
 
 A14A1_outputs.output_type = "standard"

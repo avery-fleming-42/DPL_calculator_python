@@ -14,8 +14,8 @@ def A15G_outputs(stored_values, data):
     Logic:
     - Area = H * W
     - Velocity = Q / (A / 144)
-    - Match angle (rounded up) to Excel col "ANGLE"
-    - Lookup "C" from A15G table
+    - Match angle (rounded up) to table col "ANGLE"
+    - Lookup "C" from A15G case table
     """
 
     H = stored_values.get("entry_1")
@@ -42,7 +42,8 @@ def A15G_outputs(stored_values, data):
 
         print(f"[DEBUG] Area = {A:.2f} in², Velocity = {V:.2f} ft/min")
 
-        df = data.loc["A15G"][["ANGLE", "C"]].dropna()
+        # Use centralized case table
+        df = get_case_table("A15G")[["ANGLE", "C"]].dropna()
         angle_vals = sorted(df["ANGLE"].unique())
         angle_match = min([val for val in angle_vals if val >= angle], default=max(angle_vals))
 
@@ -50,7 +51,7 @@ def A15G_outputs(stored_values, data):
 
         matched_row = df[df["ANGLE"] == angle_match]
         if matched_row.empty:
-            return {"Error": "No matching angle found in data."}
+            return {"Error": "No matching angle found in A15G data."}
 
         C = matched_row["C"].values[0]
         pressure_loss = C * vp

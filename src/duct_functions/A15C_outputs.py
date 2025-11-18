@@ -42,13 +42,15 @@ def A15C_outputs(stored_values, data):
         h_D = h / D
         print(f"[DEBUG] A = {A:.2f}, V = {V:.2f}, h/D = {h_D:.4f}")
 
-        df = data.loc["A15C"][["h/D", "C"]].dropna()
+        # Use centralized case table loader instead of `data`
+        df = get_case_table("A15C")[["h/D", "C"]].dropna()
+
         hD_vals = sorted(df["h/D"].unique())
         hD_match = max([val for val in hD_vals if val <= h_D], default=min(hD_vals))
 
         matched_row = df[df["h/D"] == hD_match]
         if matched_row.empty:
-            return {"Error": "No matching h/D value found in data."}
+            return {"Error": "No matching h/D value found in A15C data."}
 
         C = matched_row["C"].values[0]
         pressure_loss = C * vp

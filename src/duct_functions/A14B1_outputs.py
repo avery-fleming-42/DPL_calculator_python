@@ -42,8 +42,8 @@ def A14B1_outputs(stored_values, data):
         t_D = t_plate / d_hole
         print(f"[DEBUG] Computed t/D = {t_D:.4f}, Velocity = {V:.2f}")
 
-        df = data.loc["A14B1"]
-        df = df[["n, free area ratio", "t/D", "C"]].dropna()
+        # Pull A14B1 table via get_case_table instead of data.loc
+        df = get_case_table("A14B1")[["n, free area ratio", "t/D", "C"]].dropna()
 
         n_vals = df["n, free area ratio"].unique()
         tD_vals = df["t/D"].unique()

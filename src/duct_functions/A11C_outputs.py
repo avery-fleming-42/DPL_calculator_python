@@ -3,70 +3,94 @@ import pandas as pd
 import numpy as np
 from data_access import get_case_table
 
-def A11C_outputs(inputs, data):
+
+def A11C_outputs(stored_values, *_):
     """
     Calculate outputs for A11C case.
 
     Inputs:
-        inputs: dict with keys:
+        stored_values: dict with keys:
             entry_1: Main Diameter (in)
             entry_2: Branch Diameter (in)
-            entry_3: Main Upstream Flow Rate (cfm)
-            entry_4: Branch Flow Rate (cfm)
-        data: Pandas DataFrame containing the lookup table.
+            entry_3: Main Upstream / Converged Flow Rate (Qc, cfm)
+            entry_4: Branch Flow Rate (Qb, cfm)
 
     Returns:
         dict: Output values for branch and main.
     """
     try:
-        D_main = inputs.get("entry_1")
-        D_branch = inputs.get("entry_2")
-        Qc = inputs.get("entry_3")  # Converged flow
-        Qb = inputs.get("entry_4")  # Branch flow
+        # ==========================
+        #   INPUTS
+        # ==========================
+        D_main = stored_values.get("entry_1")
+        D_branch = stored_values.get("entry_2")
+        Qc = stored_values.get("entry_3")  # Converged flow
+        Qb = stored_values.get("entry_4")  # Branch flow
 
         if None in [D_main, D_branch, Qc, Qb]:
             return {"Error": "Missing input values."}
 
-        # Area calculations
-        A_main = math.pi * (D_main / 12 / 2) ** 2
-        A_branch = math.pi * (D_branch / 12 / 2) ** 2
+        # ==========================
+        #   GEOMETRY & FLOW
+        # ==========================
+        # Areas (ft²)
+        A_main = math.pi * (D_main / 12.0 / 2.0) ** 2
+        A_branch = math.pi * (D_branch / 12.0 / 2.0) ** 2
 
-        # Velocities
+        # Velocities (ft/min)
         Vc = Qc / A_main
         Vs = (Qc - Qb) / A_main
         Vb = Qb / A_branch
 
-        # Velocity pressures
-        Pvb = (Vb / 4005) ** 2
-        Pvs = (Vs / 4005) ** 2
-        Pvc = (Vc / 4005) ** 2
+        # Velocity pressures (in. w.c.)
+        Pvb = (Vb / 4005.0) ** 2
+        Pvs = (Vs / 4005.0) ** 2
+        Pvc = (Vc / 4005.0) ** 2
 
-        # --- Branch loss coefficient ---
+        # ==========================
+        #   BRANCH LOSS COEFFICIENT (A11C)
+        # ==========================
         try:
-            df_branch = data.loc["A11C"]
-            branch_data = df_branch[df_branch["PATH"] == "branch"]
+            branch_data = get_case_table("A11C")
+            branch_data = branch_data[branch_data["PATH"] == "branch"].copy()
         except KeyError:
-            return {"Error": "A11C branch data not found in Excel."}
+            return {"Error": "A11C branch data not found."}
+
+        if branch_data.empty:
+            return {"Error": "No branch data found for A11C."}
 
         Vb_Vc = Vb / Vc
-        branch_data["Vb/Vc Diff"] = abs(branch_data["Vb/Vc"] - Vb_Vc)
+        branch_data["Vb/Vc Diff"] = (branch_data["Vb/Vc"] - Vb_Vc).abs()
         branch_row = branch_data.sort_values("Vb/Vc Diff").iloc[0]
+
         C_branch = branch_row["C"]
         branch_loss = C_branch * Pvb
 
-        # --- Main loss coefficient (uses A11A main data) ---
+        # ==========================
+        #   MAIN LOSS COEFFICIENT (A11A main data)
+        # ==========================
         try:
-            df_main = data.loc["A11A"]
-            main_data = df_main[(df_main["PATH"] == "main") & (df_main["NAME"] == "Tee or Wye, Main")]
+            main_data = get_case_table("A11A")
+            main_data = main_data[
+                (main_data["PATH"] == "main") &
+                (main_data["NAME"] == "Tee or Wye, Main")
+            ].copy()
         except KeyError:
-            return {"Error": "A11A main data not found in Excel."}
+            return {"Error": "A11A main data not found."}
+
+        if main_data.empty:
+            return {"Error": "No main data found for A11A (Tee or Wye, Main)."}
 
         Vs_Vc = Vs / Vc
-        main_data["Vs/Vc Diff"] = abs(main_data["Vs/Vc"] - Vs_Vc)
+        main_data["Vs/Vc Diff"] = (main_data["Vs/Vc"] - Vs_Vc).abs()
         main_row = main_data.sort_values("Vs/Vc Diff").iloc[0]
+
         C_main = main_row["C"]
         main_loss = C_main * Pvs
 
+        # ==========================
+        #   OUTPUTS
+        # ==========================
         return {
             # Branch
             "Branch Velocity (ft/min)": Vb,
@@ -85,5 +109,5 @@ def A11C_outputs(inputs, data):
     except Exception as e:
         return {"Error": str(e)}
 
-A11C_outputs.output_type = "branch_main"
 
+A11C_outputs.output_type = "branch_main"

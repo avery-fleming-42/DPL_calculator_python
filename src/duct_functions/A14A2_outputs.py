@@ -35,11 +35,12 @@ def A14A2_outputs(stored_values, data):
 
         print(f"[DEBUG] Computed: Area = {A:.2f} in^2, Velocity = {V:.2f} ft/min")
 
-        # Look up loss coefficient from A14A1 data
-        df = data.loc["A14A1"]
-        df = df[["n, free area ratio", "C"]].dropna()
+        # Look up loss coefficient from A14A1 data USING get_case_table
+        df = get_case_table("A14A1")[["n, free area ratio", "C"]].dropna()
+
         n_vals = df["n, free area ratio"].unique()
         n_match = max([val for val in n_vals if val <= n], default=min(n_vals))
+
         C = df[df["n, free area ratio"] == n_match]["C"].values[0]
 
         print(f"[DEBUG] Matched n = {n_match}, Coefficient C = {C}")

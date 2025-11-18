@@ -10,11 +10,6 @@ def A15B_outputs(stored_values, data):
     - W (in): Width
     - Q (cfm): Flow rate
     - angle (deg): Elliptical opening angle
-
-    Logic:
-    - Compute area from H and W
-    - Compute velocity from Q and area
-    - Round up angle to match "C" in Excel data from column "ANGLE"
     """
 
     H = stored_values.get("entry_1")
@@ -35,22 +30,26 @@ def A15B_outputs(stored_values, data):
         }
 
     try:
+        # Area and velocity
         A = H * W  # in²
         V = Q / (A / 144)  # ft/min
         vp = (V / 4005) ** 2
 
-        df = data.loc["A15B"][["ANGLE", "C"]].dropna()
+        # Pull A15B table (ignore `data`)
+        df = get_case_table("A15B")[["ANGLE", "C"]].dropna()
+
         angle_vals = sorted(df["ANGLE"].unique())
         angle_match = min([val for val in angle_vals if val >= angle], default=max(angle_vals))
 
         matched_row = df[df["ANGLE"] == angle_match]
         if matched_row.empty:
-            return {"Error": "No matching angle found in data."}
+            return {"Error": "No matching angle found in A15B data."}
 
         C = matched_row["C"].values[0]
         pressure_loss = C * vp
 
-        print(f"[DEBUG] A = {A:.2f}, V = {V:.2f}, vp = {vp:.4f}, C = {C}, ΔP = {pressure_loss:.4f}")
+        print(f"[DEBUG] A = {A:.2f}, V = {V:.2f}, vp = {vp:.4f}, "
+              f"C = {C}, ΔP = {pressure_loss:.4f}")
 
         return {
             "Output 1: Velocity": V,

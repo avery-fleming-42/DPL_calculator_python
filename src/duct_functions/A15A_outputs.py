@@ -13,7 +13,7 @@ def A15A_outputs(stored_values, data):
     Logic:
     - Compute area from D
     - Compute velocity from Q and A
-    - Round up angle to find matching "C" value from Excel using column "ANGLE"
+    - Round up angle to find matching "C" value from A15A table using column "ANGLE"
     """
 
     D = stored_values.get("entry_1")
@@ -34,23 +34,26 @@ def A15A_outputs(stored_values, data):
 
     try:
         # Area and velocity
-        A = math.pi * (D / 2) ** 2
-        V = Q / (A / 144)  # ft/min
+        A = math.pi * (D / 2) ** 2        # in²
+        V = Q / (A / 144)                 # ft/min
         vp = (V / 4005) ** 2
 
+        # Pull A15A table via get_case_table (ignore `data` arg)
+        df = get_case_table("A15A")[["ANGLE", "C"]].dropna()
+
         # Match angle to data table (round up)
-        df = data.loc["A15A"][["ANGLE", "C"]].dropna()
         angle_vals = sorted(df["ANGLE"].unique())
         angle_match = min([val for val in angle_vals if val >= angle], default=max(angle_vals))
 
         matched_row = df[df["ANGLE"] == angle_match]
         if matched_row.empty:
-            return {"Error": "No matching angle found in data."}
+            return {"Error": "No matching angle found in A15A data."}
 
         C = matched_row["C"].values[0]
         pressure_loss = C * vp
 
-        print(f"[DEBUG] A = {A:.2f}, V = {V:.2f}, vp = {vp:.4f}, C = {C}, ΔP = {pressure_loss:.4f}")
+        print(f"[DEBUG] A = {A:.2f}, V = {V:.2f}, vp = {vp:.4f}, "
+              f"C = {C}, ΔP = {pressure_loss:.4f}")
 
         return {
             "Output 1: Velocity": V,

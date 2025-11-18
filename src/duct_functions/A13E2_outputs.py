@@ -3,93 +3,103 @@ import pandas as pd
 from data_access import get_case_table
 
 
-def A13E2_outputs(stored_values, data):
+def A13E2_outputs(stored_values, *_):
     """
-    Calculates the outputs for case A13E2 (rectangular exit), accounting for:
-    - exit geometry (R/W and L/W) for base loss coefficient (C)
-    - optional screen obstruction with correction factor (C1)
-    """
+    A13E2 - Rectangular exit with optional screen.
 
+    Inputs (stored_values):
+        entry_1: H  (height, in)
+        entry_2: W  (width, in)
+        entry_3: L  (length, in)
+        entry_4: R  (radius, in)
+        entry_5: Q  (flow rate, cfm)
+        entry_6: obstruction  ('none', 'none (open)', 'screen', ...)
+        entry_7: n  (free area ratio, for screen only)
+
+    Returns (dict):
+        Output 1: Velocity (ft/min)
+        Output 2: Velocity Pressure (in w.c.)
+        Output 3: Loss Coefficient
+        Output 4: Pressure Loss (in w.c.)
+    """
     # Extract inputs
-    H = stored_values.get("entry_1")  # height (in)
-    W = stored_values.get("entry_2")  # width (in)
-    L = stored_values.get("entry_3")  # length (in)
-    R = stored_values.get("entry_4")  # radius (in)
-    Q = stored_values.get("entry_5")  # flow rate (cfm)
-    obstruction = stored_values.get("entry_6")  # "none (open)", "screen"
-    n = stored_values.get("entry_7")  # free area ratio (if applicable)
-
-    print("[DEBUG] Inputs:")
-    print(f"  H = {H}, W = {W}, L = {L}, R = {R}, Q = {Q}")
-    print(f"  obstruction = {obstruction}, n = {n}")
-
-    if None in (H, W, L, R, Q):
-        print("[DEBUG] Missing one or more required inputs.")
-        return {
-            "Output 1: Velocity": None,
-            "Output 2: Velocity Pressure": None,
-            "Output 3: Loss Coefficient": None,
-            "Output 4: Pressure Loss": None,
-        }
+    H = stored_values.get("entry_1")   # in
+    W = stored_values.get("entry_2")   # in
+    L = stored_values.get("entry_3")   # in
+    R = stored_values.get("entry_4")   # in
+    Q = stored_values.get("entry_5")   # cfm
+    obstruction = stored_values.get("entry_6")
+    n = stored_values.get("entry_7")   # free area ratio if screen
 
     try:
-        A = H * W  # in^2
-        V = Q / (A / 144)  # ft/min
+        # Validate required fields
+        if None in (H, W, L, R, Q):
+            return {
+                "Output 1: Velocity (ft/min)": None,
+                "Output 2: Velocity Pressure (in w.c.)": None,
+                "Output 3: Loss Coefficient": None,
+                "Output 4: Pressure Loss (in w.c.)": None,
+            }
+
+        # --- Geometry & velocity ---
+        A = H * W                     # in²
+        V = Q / (A / 144.0)           # ft/min
+        vp = (V / 4005.0) ** 2        # in w.c.
 
         R_W = R / W
         L_W = L / W
 
-        print(f"[DEBUG] Computed: R/W = {R_W:.4f}, L/W = {L_W:.4f}, Velocity = {V:.2f}")
-
-        # Lookup base coefficient
-        df = data.loc["A13E2"]
-        df = df[["R/W", "L/W", "C"]].dropna()
+        # --- Base loss coefficient from A13E2 ---
+        df_A13E2 = get_case_table("A13E2")
+        df = df_A13E2[["R/W", "L/W", "C"]].dropna()
 
         RW_vals = df["R/W"].unique()
         LW_vals = df["L/W"].unique()
 
+        # Floor R/W and L/W to the nearest tabulated values
         RW_match = max([val for val in RW_vals if val <= R_W], default=min(RW_vals))
         LW_match = max([val for val in LW_vals if val <= L_W], default=min(LW_vals))
 
-        print(f"[DEBUG] Matching R/W = {RW_match}, L/W = {LW_match}")
-
         matched_row = df[(df["R/W"] == RW_match) & (df["L/W"] == LW_match)]
         if matched_row.empty:
-            return {"Error": "No matching R/W and L/W pair found in data."}
+            return {"Error": "No matching R/W and L/W pair found in A13E2 data."}
 
-        C = matched_row["C"].values[0]
-        print(f"[DEBUG] Base coefficient C = {C}")
+        C_base = matched_row["C"].values[0]
 
-        # Obstruction correction
-        C1 = 0
-        if obstruction == "screen" and n is not None:
-            df_screen = data.loc["A14A1"]
+        # --- Optional screen correction from A14A1 ---
+        total_C = C_base
+        if (
+            obstruction is not None
+            and isinstance(obstruction, str)
+            and "screen" in obstruction.strip().lower()
+            and n is not None
+        ):
+            df_screen = get_case_table("A14A1")
             df_screen = df_screen[["n, free area ratio", "C"]].dropna()
             n_vals = df_screen["n, free area ratio"].unique()
-            n_match = max([val for val in n_vals if val <= n], default=min(n_vals))
+
+            n_match = max(
+                [val for val in n_vals if val <= n],
+                default=min(n_vals),
+            )
             C1 = df_screen[df_screen["n, free area ratio"] == n_match]["C"].values[0]
-            print(f"[DEBUG] Screen C1 = {C1}")
+            total_C = C_base + C1   # matches your original logic
 
-        loss_coefficient = C + C1 if obstruction == "screen" else C
-        print(f"[DEBUG] Final Loss Coefficient = {loss_coefficient}")
-
-        vp = (V / 4005) ** 2
-        pressure_loss = loss_coefficient * vp
+        pressure_loss = total_C * vp
 
         return {
-            "Output 1: Velocity": V,
-            "Output 2: Velocity Pressure": vp,
-            "Output 3: Loss Coefficient": loss_coefficient,
-            "Output 4: Pressure Loss": pressure_loss,
+            "Output 1: Velocity (ft/min)": V,
+            "Output 2: Velocity Pressure (in w.c.)": vp,
+            "Output 3: Loss Coefficient": total_C,
+            "Output 4: Pressure Loss (in w.c.)": pressure_loss,
         }
 
     except Exception as e:
-        print(f"[ERROR] Exception occurred during A13E2_outputs calculation: {e}")
         return {
-            "Output 1: Velocity": None,
-            "Output 2: Velocity Pressure": None,
+            "Output 1: Velocity (ft/min)": None,
+            "Output 2: Velocity Pressure (in w.c.)": None,
             "Output 3: Loss Coefficient": None,
-            "Output 4: Pressure Loss": None,
+            "Output 4: Pressure Loss (in w.c.)": None,
             "Error": str(e),
         }
 

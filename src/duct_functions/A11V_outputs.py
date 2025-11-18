@@ -3,80 +3,125 @@ import pandas as pd
 import numpy as np
 from data_access import get_case_table
 
-def A11V_outputs(inputs, data):
+
+def A11V_outputs(stored_values, *_):
     """
     Calculate outputs for A11V case.
+
+    Inputs:
+        stored_values: dict with keys:
+            entry_1: Height (in)
+            entry_2: Main Upstream Width (Wc, in)
+            entry_3: Branch Width (Wb, in)
+            entry_4: Main Downstream Width (Ws, in)
+            entry_5: Upstream Flow (Qc, cfm)
+            entry_6: Branch Flow (Qb, cfm)
+
+    Returns:
+        dict: Output values for branch and main.
     """
     try:
-        # Extract inputs
-        H = inputs.get("entry_1")  # Height (in)
-        W_c = inputs.get("entry_2")  # Main Upstream Width (in)
-        W_b = inputs.get("entry_3")  # Branch Width (in)
-        W_s = inputs.get("entry_4")  # Main Downstream Width (in)
-        Q_c = inputs.get("entry_5")  # Upstream Flow (cfm)
-        Q_b = inputs.get("entry_6")  # Branch Flow (cfm)
+        # ==========================
+        #   INPUTS
+        # ==========================
+        H = stored_values.get("entry_1")   # Height (in)
+        W_c = stored_values.get("entry_2") # Main Upstream Width (in)
+        W_b = stored_values.get("entry_3") # Branch Width (in)
+        W_s = stored_values.get("entry_4") # Main Downstream Width (in)
+        Q_c = stored_values.get("entry_5") # Upstream Flow (cfm)
+        Q_b = stored_values.get("entry_6") # Branch Flow (cfm)
 
         if None in [H, W_c, W_b, W_s, Q_c, Q_b]:
             return {"Error": "Missing input values."}
 
-        # Area calculations (in² → ft²)
+        # ==========================
+        #   AREAS (in² -> ft²)
+        # ==========================
         A_c_in2 = H * W_c
         A_s_in2 = H * W_s
         A_b_in2 = H * W_b
-        A_c = A_c_in2 / 144
-        A_s = A_s_in2 / 144
-        A_b = A_b_in2 / 144
 
-        # Velocities
+        A_c = A_c_in2 / 144.0
+        A_s = A_s_in2 / 144.0
+        A_b = A_b_in2 / 144.0
+
+        # ==========================
+        #   VELOCITIES (ft/min)
+        # ==========================
         V_c = Q_c / A_c
         V_b = Q_b / A_b
         V_s = (Q_c - Q_b) / A_s
 
-        # Velocity Pressures
-        Pvc = (V_c / 4005) ** 2
-        Pvb = (V_b / 4005) ** 2
-        Pvs = (V_s / 4005) ** 2
+        # ==========================
+        #   VELOCITY PRESSURES (in w.c.)
+        # ==========================
+        Pvc = (V_c / 4005.0) ** 2
+        Pvb = (V_b / 4005.0) ** 2
+        Pvs = (V_s / 4005.0) ** 2
 
-        # Ratios
+        # ==========================
+        #   RATIOS
+        # ==========================
         Ab_As = A_b_in2 / A_s_in2
         Ab_Ac = A_b_in2 / A_c_in2
         Qb_Qc = Q_b / Q_c
-        Vs_Vc = V_s / V_c
+        Vs_Vc = V_s / V_c  # not used in table lookup but kept for completeness
 
-        # --- Branch Loss Coefficient ---
+        # ==========================
+        #   LOAD CASE TABLE
+        # ==========================
         try:
-            branch_data = data.loc["A11V"]
-            branch_data = branch_data[branch_data["PATH"] == "branch"].copy()
+            df = get_case_table("A11V")
         except KeyError:
+            return {"Error": "A11V data not found."}
+
+        # ==========================
+        #   BRANCH LOSS COEFFICIENT (PATH='branch')
+        #   C_branch = f(Ab/As, Ab/Ac, Qb/Qc)
+        # ==========================
+        branch_data = df[df["PATH"] == "branch"].copy()
+        if branch_data.empty:
             return {"Error": "A11V branch data not found."}
 
-        branch_data["Ab/As Diff"] = abs(branch_data["Ab/As"] - Ab_As)
-        branch_data["Ab/Ac Diff"] = abs(branch_data["Ab/Ac"] - Ab_Ac)
+        branch_data["Ab/As Diff"] = (branch_data["Ab/As"] - Ab_As).abs()
+        branch_data["Ab/Ac Diff"] = (branch_data["Ab/Ac"] - Ab_Ac).abs()
         branch_data["Qb/Qc Diff"] = branch_data["Qb/Qc"].apply(
-            lambda x: abs(x - Qb_Qc) if Qb_Qc <= 0.7 else (x - Qb_Qc if x >= Qb_Qc else float("inf"))
+            lambda x: abs(x - Qb_Qc)
+            if Qb_Qc <= 0.7
+            else (x - Qb_Qc if x >= Qb_Qc else float("inf"))
         )
 
-        branch_row = branch_data.sort_values(by=["Ab/As Diff", "Ab/Ac Diff", "Qb/Qc Diff"]).iloc[0]
+        branch_row = branch_data.sort_values(
+            by=["Ab/As Diff", "Ab/Ac Diff", "Qb/Qc Diff"]
+        ).iloc[0]
         C_branch = branch_row["C"]
         branch_loss = C_branch * Pvb
 
-        # --- Main Loss Coefficient ---
-        try:
-            main_data = data.loc["A11V"]
-            main_data = main_data[main_data["PATH"] == "main"].copy()
-        except KeyError:
+        # ==========================
+        #   MAIN LOSS COEFFICIENT (PATH='main')
+        #   C_main = f(Ab/As, Ab/Ac, Qb/Qc)
+        # ==========================
+        main_data = df[df["PATH"] == "main"].copy()
+        if main_data.empty:
             return {"Error": "A11V main data not found."}
 
-        main_data["Ab/As Diff"] = abs(main_data["Ab/As"] - Ab_As)
-        main_data["Ab/Ac Diff"] = abs(main_data["Ab/Ac"] - Ab_Ac)
+        main_data["Ab/As Diff"] = (main_data["Ab/As"] - Ab_As).abs()
+        main_data["Ab/Ac Diff"] = (main_data["Ab/Ac"] - Ab_Ac).abs()
         main_data["Qb/Qc Diff"] = main_data["Qb/Qc"].apply(
-            lambda x: abs(x - Qb_Qc) if Qb_Qc <= 0.7 else (x - Qb_Qc if x >= Qb_Qc else float("inf"))
+            lambda x: abs(x - Qb_Qc)
+            if Qb_Qc <= 0.7
+            else (x - Qb_Qc if x >= Qb_Qc else float("inf"))
         )
 
-        main_row = main_data.sort_values(by=["Ab/As Diff", "Ab/Ac Diff", "Qb/Qc Diff"]).iloc[0]
+        main_row = main_data.sort_values(
+            by=["Ab/As Diff", "Ab/Ac Diff", "Qb/Qc Diff"]
+        ).iloc[0]
         C_main = main_row["C"]
         main_loss = C_main * Pvs
 
+        # ==========================
+        #   OUTPUTS
+        # ==========================
         return {
             # Branch Outputs
             "Branch Velocity (ft/min)": V_b,
@@ -94,5 +139,6 @@ def A11V_outputs(inputs, data):
 
     except Exception as e:
         return {"Error": str(e)}
+
 
 A11V_outputs.output_type = "branch_main"
