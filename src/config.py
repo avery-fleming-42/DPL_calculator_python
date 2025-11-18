@@ -1,25 +1,24 @@
 from pathlib import Path
-import sys
 import os
+import sys
 
-# Repo root: one level up from src/
+# Root of the repo (folder that contains src/, data/, etc.)
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 SRC_DIR = ROOT_DIR / "src"
 DATA_DIR = ROOT_DIR / "data"
 FIGURES_DIR = ROOT_DIR / "duct_figures"
 
-# Excel file path (normal run)
+# Excel file path
 EXCEL_FILE_PATH = DATA_DIR / "DPL_data.xlsx"
+
 
 def get_data_file_path(filename: str) -> str:
     """
-    Returns the path to a data file (e.g., DPL_data.xlsx).
-    Handles PyInstaller (_MEIPASS) and normal script mode.
+    Return the path to a data file (e.g. DPL_data.xlsx).
+    Handles both normal Python and PyInstaller builds.
     """
     if hasattr(sys, "_MEIPASS"):
-        # inside PyInstaller bundle
+        # When running from a PyInstaller bundle
         return os.path.join(sys._MEIPASS, filename)
-    else:
-        return str(DATA_DIR / filename)
-
+    return str(DATA_DIR / filename)

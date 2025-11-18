@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from tkinter import filedialog, messagebox # Added messagebox
+from tkinter import filedialog, messagebox  # Added messagebox
 import tkinter as tk
 import importlib
 from tkinter import *
@@ -10,27 +10,28 @@ from tabulate import tabulate
 import datetime
 import sys
 import os
-import traceback # For detailed error logging
+import traceback  # For detailed error logging
 import scipy
 
+# --- Path setup so the app behaves like before, even after repo re-org ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Make sure src/, duct_functions/, and special_cases/ are importable like before
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+DUCT_FUNCTIONS_DIR = os.path.join(SCRIPT_DIR, "duct_functions")
+SPECIAL_CASES_DIR = os.path.join(SCRIPT_DIR, "special_cases")
+for p in (DUCT_FUNCTIONS_DIR, SPECIAL_CASES_DIR):
+    if os.path.isdir(p) and p not in sys.path:
+        sys.path.insert(0, p)
+
+# Use shared config for data + figures
+from config import EXCEL_FILE_PATH, FIGURES_DIR, get_data_file_path
+
 # --- Configuration ---
-# Ensure these paths are correct for your system
-# Use os.path.join for better cross-platform compatibility if needed
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in locals() else os.getcwd()
-IMAGE_FOLDER = os.path.join(SCRIPT_DIR, "duct_figures") # Assumes figures are in a subfolder
+IMAGE_FOLDER = str(FIGURES_DIR)  # points at repo_root/duct_figures
 DEFAULT_IMAGE = "jacobs_smacna_logos.png"
-
-# Dynamically resolve the path to DPL_data.xlsx
-def get_data_file_path(filename):
-    if hasattr(sys, '_MEIPASS'):
-        # Running as a PyInstaller executable
-        return os.path.join(sys._MEIPASS, filename)
-    else:
-        # Running as a regular Python script
-        return os.path.join(os.path.dirname(__file__), filename)
-
-# Load the Excel file dynamically
-EXCEL_FILE_PATH = get_data_file_path("DPL_data.xlsx")
 
 # --- Unit Conversion Class ---
 class UnitConverter:
@@ -748,9 +749,11 @@ def update_inputs_and_outputs(duct_id):
     # --- Special Handling (e.g., A12G) ---
     if duct_id == "A12G":
         try:
-            a12g_module_name = "A12G_dynamic_inputs"
+            # Load the special dynamic-inputs module from special_cases
+            a12g_module_name = "special_cases.A12G_dynamic_inputs"
             a12g_module = importlib.import_module(a12g_module_name)
             print("[DEBUG] A12G: Calling build_A12G_inputs()")
+
             a12g_module.build_A12G_inputs(
                 input_frame=input_frame,
                 input_entries=input_entries,
@@ -762,9 +765,12 @@ def update_inputs_and_outputs(duct_id):
                 output_widgets=output_widgets,
                 root=root,
                 prepopulate_outputs=prepopulate_outputs,
-                clear_outputs=clear_outputs
+                clear_outputs=clear_outputs,
             )
-            from A12G_outputs import A12G_outputs
+
+            # Load the corresponding outputs function from duct_functions
+            from duct_functions.A12G_outputs import A12G_outputs
+
             current_case_function = A12G_outputs
             print("[DEBUG] A12G inputs built.")
         except Exception as e:
@@ -772,7 +778,13 @@ def update_inputs_and_outputs(duct_id):
             print(f"[ERROR] {error_msg}")
             traceback.print_exc()
             messagebox.showerror("A12G Error", error_msg)
-            lbl = Label(input_frame, text=error_msg, fg="red", bg="#eaf4ff", wraplength=input_frame.winfo_width() - 20)
+            lbl = Label(
+                input_frame,
+                text=error_msg,
+                fg="red",
+                bg="#eaf4ff",
+                wraplength=input_frame.winfo_width() - 20,
+            )
             lbl.pack(padx=10, pady=10)
             input_widgets.append(lbl)
             return  # Stop if A12G fails
@@ -795,19 +807,31 @@ def update_inputs_and_outputs(duct_id):
             duct_data_row = data.loc[[duct_id]]
             first_row = duct_data_row.iloc[0]
 
-            case_module_name = f"{duct_id}_outputs"
-            func_name = f"{duct_id}_outputs"
-            if case_module_name in sys.modules:
-                case_module = importlib.reload(sys.modules[case_module_name])
+            # duct_functions/ is on sys.path, so modules are just A10C_outputs, etc.
+            module_name = f"{duct_id}_outputs"
+            func_name = module_name
+
+            if module_name in sys.modules:
+                case_module = importlib.reload(sys.modules[module_name])
             else:
-                case_module = importlib.import_module(case_module_name)
+                case_module = importlib.import_module(module_name)
+
             if hasattr(case_module, func_name):
                 current_case_function = getattr(case_module, func_name)
             else:
                 raise AttributeError(f"Function '{func_name}' not found.")
-            print(f"[DEBUG] Loaded function: {func_name}, Type: {getattr(current_case_function, 'output_type', 'standard')}")
+            print(
+                f"[DEBUG] Loaded function: {func_name}, "
+                f"Type: {getattr(current_case_function, 'output_type', 'standard')}"
+            )
 
-            title_label = Label(input_frame, text=f"Input Parameters ({duct_id})", bg="#eaf4ff", fg="black", font=("Segoe UI", 14, "bold"))
+            title_label = Label(
+                input_frame,
+                text=f"Input Parameters ({duct_id})",
+                bg="#eaf4ff",
+                fg="black",
+                font=("Segoe UI", 14, "bold"),
+            )
             title_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 10))
             input_widgets.append(title_label)
             grid_row_idx = 1
@@ -820,10 +844,20 @@ def update_inputs_and_outputs(duct_id):
                     input_widgets.remove(calculate_button)
                     calculate_button.destroy()
                 root.unbind("<Return>")
-                calculate_button = Button(input_frame, text="Calculate", command=store_inputs_and_calculate,
-                                          bg="#d0e0d0", fg="black", font=("Segoe UI", 11, "bold"),
-                                          relief="raised", bd=2, padx=15, pady=4,
-                                          activebackground="#b0c0b0", cursor="hand2")
+                calculate_button = Button(
+                    input_frame,
+                    text="Calculate",
+                    command=store_inputs_and_calculate,
+                    bg="#d0e0d0",
+                    fg="black",
+                    font=("Segoe UI", 11, "bold"),
+                    relief="raised",
+                    bd=2,
+                    padx=15,
+                    pady=4,
+                    activebackground="#b0c0b0",
+                    cursor="hand2",
+                )
                 calculate_button.grid(row=button_row, column=0, columnspan=2, pady=15, ipady=2)
                 input_widgets.append(calculate_button)
                 root.bind("<Return>", lambda event, b=calculate_button: b.invoke())
@@ -851,7 +885,7 @@ def update_inputs_and_outputs(duct_id):
                     fields_to_add = [
                         ("n, free area ratio:", "ratio_n"),
                         ("Plate thickness (in):", "plate_t"),
-                        ("Hole diameter (in):", "hole_d")
+                        ("Hole diameter (in):", "hole_d"),
                     ]
 
                 if not fields_to_add:
@@ -862,15 +896,30 @@ def update_inputs_and_outputs(duct_id):
                 new_entries_to_bind = []
                 for label_std, key_suffix in fields_to_add:
                     label_display = converter.get_display_label(label_std, is_metric_mode)
-                    lbl = Label(input_frame, text=f"{label_display}:", bg="#eaf4ff", fg="black", anchor="e", font=("Segoe UI", 10))
+                    lbl = Label(
+                        input_frame,
+                        text=f"{label_display}:",
+                        bg="#eaf4ff",
+                        fg="black",
+                        anchor="e",
+                        font=("Segoe UI", 10),
+                    )
                     lbl.grid(row=dynamic_row, column=0, sticky="e", padx=(10, 5), pady=1)
                     input_widgets.append(lbl)
                     dynamic_widgets_ref[trigger_key].append(lbl)
 
-                    # ✅ Use tk.Entry here:
-                    entry = Entry(input_frame, width=20, relief="solid", borderwidth=1,
-                                bg="white", fg="black", highlightthickness=1,
-                                highlightbackground="grey", highlightcolor="blue", font=("Segoe UI", 10))
+                    entry = Entry(
+                        input_frame,
+                        width=20,
+                        relief="solid",
+                        borderwidth=1,
+                        bg="white",
+                        fg="black",
+                        highlightthickness=1,
+                        highlightbackground="grey",
+                        highlightcolor="blue",
+                        font=("Segoe UI", 10),
+                    )
                     entry.grid(row=dynamic_row, column=1, sticky="w", padx=(5, 10), pady=1)
                     input_widgets.append(entry)
                     dynamic_widgets_ref[trigger_key].append(entry)
@@ -878,7 +927,9 @@ def update_inputs_and_outputs(duct_id):
                     dynamic_row += 1
 
                 try:
-                    trigger_index = next(i for i, (widget, _) in enumerate(input_entries) if widget == trigger_widget)
+                    trigger_index = next(
+                        i for i, (widget, _) in enumerate(input_entries) if widget == trigger_widget
+                    )
                     for i, new_item in enumerate(new_entries_to_bind):
                         input_entries.insert(trigger_index + 1 + i, new_item)
                     for i in range(trigger_index, len(input_entries)):
@@ -893,37 +944,70 @@ def update_inputs_and_outputs(duct_id):
                 grid_row_idx = dynamic_row
                 place_calculate_button(grid_row_idx)
 
-
             for idx, excel_col_name in enumerate(input_columns):
                 if excel_col_name in first_row and pd.notna(first_row[excel_col_name]):
                     input_label_standard = str(first_row[excel_col_name]).strip()
                     label_display_text = converter.get_display_label(input_label_standard, is_metric_mode)
-                    print(f"[DEBUG] Creating input row {grid_row_idx}: '{input_label_standard}' (Display: '{label_display_text}')")
-                    lbl = Label(input_frame, text=f"{label_display_text}:", bg="#eaf4ff", fg="black", anchor="e", font=("Segoe UI", 10))
+                    print(
+                        f"[DEBUG] Creating input row {grid_row_idx}: "
+                        f"'{input_label_standard}' (Display: '{label_display_text}')"
+                    )
+                    lbl = Label(
+                        input_frame,
+                        text=f"{label_display_text}:",
+                        bg="#eaf4ff",
+                        fg="black",
+                        anchor="e",
+                        font=("Segoe UI", 10),
+                    )
                     lbl.grid(row=grid_row_idx, column=0, sticky="e", padx=(10, 5), pady=1)
                     input_widgets.append(lbl)
 
                     dropdown_col_lookup = f"dropdown {idx + 1}"
                     dropdown_values = []
                     if dropdown_col_lookup in duct_data_row.columns:
-                        dropdown_values = [str(v).strip() for v in duct_data_row[dropdown_col_lookup].dropna().unique() if str(v).strip()]
+                        dropdown_values = [
+                            str(v).strip()
+                            for v in duct_data_row[dropdown_col_lookup].dropna().unique()
+                            if str(v).strip()
+                        ]
 
                     current_widget = None
                     if dropdown_values:
-                        combo = ttk.Combobox(input_frame, values=dropdown_values, state="readonly", width=18, font=("Segoe UI", 10))
+                        combo = ttk.Combobox(
+                            input_frame,
+                            values=dropdown_values,
+                            state="readonly",
+                            width=18,
+                            font=("Segoe UI", 10),
+                        )
                         combo.grid(row=grid_row_idx, column=1, sticky="w", padx=(5, 10), pady=1)
                         input_widgets.append(combo)
                         input_entries.append((combo, input_label_standard))
                         current_widget = combo
                         combo.standard_label_key = input_label_standard
                         if "obstruction type" in input_label_standard.lower():
-                            print(f"[DEBUG] Binding dynamic update to dropdown: '{input_label_standard}'")
-                            callback = lambda event, w=combo, r=grid_row_idx + 1: update_dynamic_fields(w, w.get().strip().lower(), r)
+                            print(
+                                f"[DEBUG] Binding dynamic update to dropdown: "
+                                f"'{input_label_standard}'"
+                            )
+                            callback = lambda event, w=combo, r=grid_row_idx + 1: update_dynamic_fields(
+                                w, w.get().strip().lower(), r
+                            )
                             combo.bind("<<ComboboxSelected>>", callback)
                     else:
-                        entry = Entry(input_frame, width=20, relief="solid", borderwidth=1, bg="white", fg="black",
-                                      highlightthickness=1, highlightbackground="grey", highlightcolor="blue",
-                                      font=("Segoe UI", 10))
+                        entry = Entry(
+                            input_frame,
+                            width=20,
+                            relief="solid",
+                            borderwidth=1,
+                            bg="white",
+                            fg="black",
+                            highlightthickness=1,
+                            highlightbackground="grey",
+                            highlightcolor="blue",
+                            font=("Segoe UI", 10),
+                        )
                         entry.grid(row=grid_row_idx, column=1, sticky="w", padx=(5, 10), pady=1)
                         input_widgets.append(entry)
                         input_entries.append((entry, input_label_standard))
@@ -944,8 +1028,13 @@ def update_inputs_and_outputs(duct_id):
             print(f"[ERROR] {error_msg}")
             traceback.print_exc()
             messagebox.showerror("Input Generation Error", error_msg)
-            lbl = Label(input_frame, text=f"Error displaying inputs for '{duct_id}'.", fg="red", bg="#eaf4ff")
-            lbl.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=10, pady=5)
+            lbl = Label(
+                input_frame,
+                text=f"Error displaying inputs for '{duct_id}'.",
+                fg="red",
+                bg="#eaf4ff",
+            )
+            lbl.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=5)
             input_widgets.append(lbl)
 
     if current_case_function:
@@ -956,7 +1045,6 @@ def update_inputs_and_outputs(duct_id):
             traceback.print_exc()
     else:
         print("[WARN] No case function loaded, cannot pre-populate outputs.")
-
 
 # --- Duct Map and Categories ---
 # (Your existing duct_map and categories_map - ensure images exist)

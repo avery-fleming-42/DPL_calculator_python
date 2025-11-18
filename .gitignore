@@ -16,5 +16,3 @@ dist/
 
 # If you DO NOT want to track these, leave them ignored:
 # Remove these lines if you WANT figures + excel in GitHub
-DPL_data.xlsx
-duct_figures/
