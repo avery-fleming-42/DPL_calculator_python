@@ -14,5 +14,8 @@ build/
 dist/
 *.spec
 
-# If you DO NOT want to track these, leave them ignored:
-# Remove these lines if you WANT figures + excel in GitHub
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Excel case tables + duct figures ARE tracked — no ignore rules here.
