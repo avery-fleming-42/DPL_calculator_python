@@ -5,13 +5,18 @@ import tkinter as tk
 import importlib
 from tkinter import *
 from tkinter import ttk
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageOps
 from tabulate import tabulate
 import datetime
 import sys
 import os
 import traceback  # For detailed error logging
 import scipy
+from interpolation_manager import preload_all_case_interpolators, get_case_interpolator
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+from data_access import get_case_table
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  # needed for 3D projection   
 
 # --- Path setup so the app behaves like before, even after repo re-org ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -157,9 +162,69 @@ calculation_log = []
 last_standard_results = {} # Store {standard_label: standard_value} from last calculation (mapped from raw)
 current_duct_id = None
 current_case_function = None
-
+details_btn = None  # will be created in __main__ and enabled when a case is selected
 is_metric_mode = False
 converter = UnitConverter()
+
+# --- Theme / Dark Mode ---
+is_dark_mode = False
+
+LIGHT_THEME = {
+    "bg": "#f0f0f0",
+    "fg": "#000000",
+
+    "ribbon_bg": "#e0e0e0",
+
+    "tree_bg": "#ffffff",
+    "tree_fg": "#000000",
+    "tree_sel_bg": "#cce5ff",
+
+    "input_bg": "#eaf4ff",
+    "output_bg": "#ffffe0",
+    "panel_bg": "#ffffff",
+    "image_bg": "#ffffff",
+    "canvas_bg": "#ffffff",
+
+    "entry_bg": "#ffffff",
+    "entry_fg": "#000000",
+
+    "button_bg": "#f0f0f0",
+    "button_fg": "#333333",
+    "button_active_bg": "#d9d9d9",
+
+    "button_danger_bg": "#f0d0d0",
+    "button_danger_active_bg": "#e0b0b0",
+}
+
+DARK_THEME = {
+    "bg": "#020617",           # overall window background (very dark)
+    "fg": "#e5e7eb",
+
+    "ribbon_bg": "#020617",
+
+    "tree_bg": "#020617",
+    "tree_fg": "#e5e7eb",
+    "tree_sel_bg": "#111827",
+
+    "input_bg": "#111827",
+    "output_bg": "#111827",
+    "panel_bg": "#020617",
+    "image_bg": "#000000",
+    "canvas_bg": "#000000",
+
+    "entry_bg": "#020617",
+    "entry_fg": "#e5e7eb",
+
+    # darker buttons, light text
+    "button_bg": "#020617",
+    "button_fg": "#e5e7eb",
+    "button_active_bg": "#111827",
+
+    "button_danger_bg": "#450a0a",
+    "button_danger_active_bg": "#7f1d1d",
+}
+
+current_theme = LIGHT_THEME
 
 # --- Widget Animation: Shake Inline Error Labels ---
 def shake_widget(widget, shake_distance=10, shake_times=6, interval=40):
@@ -186,7 +251,14 @@ def shake_widget(widget, shake_distance=10, shake_times=6, interval=40):
     shake_cycle()
 
 # --- Style helper (for buttons) ---
-def style_button(btn, bg_color="#f0f0f0", active_bg="#d9d9d9"):
+def style_button(btn, variant="normal"):
+    if variant == "danger":
+        bg_color = current_theme["button_danger_bg"]
+        active_bg = current_theme["button_danger_active_bg"]
+    else:
+        bg_color = current_theme["button_bg"]
+        active_bg = current_theme["button_active_bg"]
+
     btn.configure(
         font=("Segoe UI", 10),
         relief="groove",
@@ -194,9 +266,9 @@ def style_button(btn, bg_color="#f0f0f0", active_bg="#d9d9d9"):
         padx=10,
         pady=4,
         bg=bg_color,
-        fg="#333333",
+        fg=current_theme["button_fg"],
         activebackground=active_bg,
-        activeforeground="#000000",
+        activeforeground=current_theme["fg"],
         cursor="hand2"
     )
 
@@ -344,11 +416,6 @@ def bind_navigation(entry_widget, entry_list_index):
     entry_widget.bind("<Down>", focus_next); entry_widget.bind("<Key-Return>", focus_next)
     entry_widget.bind("<Up>", focus_prev)
 
-
-# --- Helper: Map Raw Output Keys to Standard Labels ---
-# !! IMPORTANT !! YOU MUST POPULATE THIS MAP ACCURATELY !!
-# Map every key returned by your calculation functions (left side)
-# to a consistent, descriptive standard label with units (right side).
 # --- Helper: Map Raw Output Keys to Standard Labels ---
 OUTPUT_KEY_TO_STANDARD_LABEL_MAP = {
     # Standard cases
@@ -356,6 +423,12 @@ OUTPUT_KEY_TO_STANDARD_LABEL_MAP = {
     "Output 2: Vel. Pres @ V0 (in w.c.)": "Velocity Pressure (in w.c.)",
     "Output 3: Loss Coefficient": "Loss Coefficient",
     "Output 4: Pressure Loss (in w.c.)": "Total Pressure Loss (in w.c.)",
+
+    # Interpolation / diagnostic variants (e.g., A8H)
+    "Output 3: Loss Coefficient (nearest)": "Loss Coefficient (nearest)",
+    "Output 4: Loss Coefficient (bilinear)": "Loss Coefficient (bilinear)",
+    "Output 5: Pressure Loss (in w.c., bilinear)": "Total Pressure Loss (in w.c., bilinear)",
+
     # Branch-Main cases
     "Branch Velocity (ft/min)": "Branch Velocity (ft/min)",
     "Branch Velocity Pressure (in w.c.)": "Branch Velocity Pressure (in w.c.)",
@@ -367,6 +440,7 @@ OUTPUT_KEY_TO_STANDARD_LABEL_MAP = {
     "Main, Converged Velocity Pressure (in w.c.)": "Main, Converged Velocity Pressure (in w.c.)",
     "Main Loss Coefficient": "Main Loss Coefficient",
     "Main Pressure Loss (in w.c.)": "Main Pressure Loss (in w.c.)",
+
     # Dual-Branch cases
     "Branch 1 Velocity (ft/min)": "Branch 1 Velocity (ft/min)",
     "Branch 1 Velocity Pressure (in w.c.)": "Branch 1 Velocity Pressure (in w.c.)",
@@ -435,7 +509,8 @@ def store_inputs_and_calculate():
                     widget_index = input_widgets.index(entry_widget)
                     if widget_index > 0 and isinstance(input_widgets[widget_index - 1], Label):
                         label_text = input_widgets[widget_index - 1].cget("text")
-                except: pass
+                except:
+                    pass
                 value_for_calc = converter.input_to_standard(label_text, entered_value)
             except ValueError:
                 messagebox.showerror("Invalid Input", f"Invalid numeric input: {raw_value_str}")
@@ -448,10 +523,9 @@ def store_inputs_and_calculate():
         # Reset background if previously red
         try:
             if entry_widget.winfo_class() == "Entry" and entry_widget.cget("bg") == "#ffcccc":
-                entry_widget.config(bg="white")
+                entry_widget.config(bg=current_theme["entry_bg"])
         except tk.TclError:
             pass  # This widget doesn’t support "bg"
-
 
     # --- Constraint Check ---
     for key, rule in constraints.items():
@@ -474,7 +548,13 @@ def store_inputs_and_calculate():
                 idx = int(key.split("_")[1]) - 1
                 offending_widget = input_entries[idx][0]
                 offending_widget.config(bg="#ffcccc")
-                error_lbl = Label(input_frame, text=rule["message"], fg="red", bg="#eaf4ff", font=("Segoe UI", 9, "italic"))
+                error_lbl = Label(
+                    input_frame,
+                    text=rule["message"],
+                    fg="red",
+                    bg=input_frame["bg"],
+                    font=("Segoe UI", 9, "italic"),
+                )
                 error_lbl.grid(row=idx + 1, column=2, sticky="w", padx=5)
                 error_lbl.is_error = True
                 shake_widget(error_lbl)  # <--- Animate the error message
@@ -516,20 +596,27 @@ def display_outputs_raw(raw_results_dict):
     """Displays outputs based on the RAW dictionary returned by the calculation function.
        Uses OUTPUT_KEY_TO_STANDARD_LABEL_MAP to find standard labels for unit conversion."""
     global output_widgets, last_standard_results
-    clear_outputs() # Clears widgets and last_standard_results
+    clear_outputs()  # Clears widgets and last_standard_results
 
-    processed_results_for_display = [] # List of (standard_label, standard_value)
+    processed_results_for_display = []  # List of (standard_label, standard_value)
 
     if not raw_results_dict:
         print("[DEBUG] display_outputs_raw called with empty results.")
         return
 
-    output_frame.configure(bg="#ffffe0")
+    output_frame.configure(bg=current_theme["output_bg"])
 
     if "Error" in raw_results_dict:
         error_message = raw_results_dict["Error"]
-        error_label = Label(output_frame, text=error_message, bg="#ffffe0", fg="red",
-                            font=("Segoe UI", 10, "bold"), wraplength=output_frame.winfo_width() - 40, justify=LEFT)
+        error_label = Label(
+            output_frame,
+            text=error_message,
+            bg=output_frame["bg"],
+            fg="red",
+            font=("Segoe UI", 10, "bold"),
+            wraplength=output_frame.winfo_width() - 40,
+            justify=LEFT,
+        )
         error_label.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
         output_widgets.append(error_label)
         output_frame.grid_rowconfigure(0, weight=1)
@@ -541,91 +628,130 @@ def display_outputs_raw(raw_results_dict):
         standard_label = OUTPUT_KEY_TO_STANDARD_LABEL_MAP.get(raw_key)
         if standard_label:
             # Assume raw_value is in standard units as returned by function
-            last_standard_results[standard_label] = raw_value # Store for toggling
+            last_standard_results[standard_label] = raw_value  # Store for toggling
             processed_results_for_display.append((standard_label, raw_value))
         else:
             print(f"[WARN] Output key '{raw_key}' not found in MAP. Cannot process for display/toggle.")
             # Optionally display raw key/value without conversion if desired
-            # processed_results_for_display.append((raw_key, raw_value)) # Treat raw key as label
+            # processed_results_for_display.append((raw_key, raw_value))
 
     # Now display using the processed list of (standard_label, standard_value)
     display_outputs_from_standard(last_standard_results)
 
-
 def display_outputs_from_standard(standard_results_dict):
-     """Displays outputs given a dictionary of {standard_label: standard_value}.
-        Used directly by toggle_units and potentially by display_outputs_raw after mapping."""
-     global output_widgets # Don't clear last_standard_results here
-     # Clear only widgets
-     for widget in output_widgets: widget.destroy()
-     output_widgets.clear()
+    """Displays outputs given a dictionary of {standard_label: standard_value}.
+       Used directly by toggle_units and potentially by display_outputs_raw after mapping."""
+    global output_widgets  # Don't clear last_standard_results here
+    # Clear only widgets
+    for widget in output_widgets:
+        widget.destroy()
+    output_widgets.clear()
 
-     if not standard_results_dict:
-         print("[DEBUG] display_outputs_from_standard called empty.")
-         return
+    if not standard_results_dict:
+        print("[DEBUG] display_outputs_from_standard called empty.")
+        return
 
-     output_frame.configure(bg="#ffffe0")
-     # Assuming no "Error" key here, as this is called with processed/stored data
+    output_frame.configure(bg=current_theme["output_bg"])
+    # Assuming no "Error" key here, as this is called with processed/stored data
 
-     title_label = Label(output_frame, text="Output Results", bg="#ffffe0", font=("Segoe UI", 14, "bold"), fg="#333")
-     title_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 10))
-     output_widgets.append(title_label)
+    title_label = Label(
+        output_frame,
+        text="Output Results",
+        bg=output_frame["bg"],
+        font=("Segoe UI", 14, "bold"),
+        fg=current_theme["fg"],
+    )
+    title_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 10))
+    output_widgets.append(title_label)
 
-     row_counter = 1
-     output_type = getattr(current_case_function, "output_type", "standard") # Infer type
+    row_counter = 1
+    output_type = getattr(current_case_function, "output_type", "standard")  # Infer type
 
-     # --- Grouping and Sectioning logic (using standard_label) ---
-     sections = {}
-     processed_keys = set()
-     order = []
-     if output_type == "dual_branch": order = ["Branch 1", "Branch 2", "Main"]
-     elif output_type == "branch_main": order = ["Branch", "Main"]
-     else: order = ["Results"]
+    # --- Grouping and Sectioning logic (using standard_label) ---
+    sections = {}
+    processed_keys = set()
+    order = []
+    if output_type == "dual_branch":
+        order = ["Branch 1", "Branch 2", "Main"]
+    elif output_type == "branch_main":
+        order = ["Branch", "Main"]
+    else:
+        order = ["Results"]
 
-     for std_label, std_value in standard_results_dict.items():
-          found_section = False
-          for section_prefix in order:
-              # Use lower case for robust prefix matching
-              if std_label and std_label.lower().startswith(section_prefix.lower()):
-                  if section_prefix not in sections: sections[section_prefix] = []
-                  sections[section_prefix].append((std_label, std_value))
-                  processed_keys.add(std_label); found_section = True; break
-          if not found_section:
-              fallback_section = "Results" if "Results" in order else "Other Results"
-              if fallback_section not in sections: sections[fallback_section] = []
-              sections[fallback_section].append((std_label, std_value))
-              processed_keys.add(std_label)
-              if fallback_section not in order: order.append(fallback_section)
+    for std_label, std_value in standard_results_dict.items():
+        found_section = False
+        for section_prefix in order:
+            # Use lower case for robust prefix matching
+            if std_label and std_label.lower().startswith(section_prefix.lower()):
+                if section_prefix not in sections:
+                    sections[section_prefix] = []
+                sections[section_prefix].append((std_label, std_value))
+                processed_keys.add(std_label)
+                found_section = True
+                break
+        if not found_section:
+            fallback_section = "Results" if "Results" in order else "Other Results"
+            if fallback_section not in sections:
+                sections[fallback_section] = []
+            sections[fallback_section].append((std_label, std_value))
+            processed_keys.add(std_label)
+            if fallback_section not in order:
+                order.append(fallback_section)
 
-     # --- Rendering Sections ---
-     for section_title in order:
-          if section_title not in sections or not sections[section_title]: continue
-          results_list = sections[section_title]
-          if len(order) > 1 or section_title != "Results":
-              header = Label(output_frame, text=section_title, bg="#ffffe0", font=("Segoe UI", 11, "bold"), fg="#555")
-              header.grid(row=row_counter, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 3))
-              output_widgets.append(header); row_counter += 1
+    # --- Rendering Sections ---
+    for section_title in order:
+        if section_title not in sections or not sections[section_title]:
+            continue
+        results_list = sections[section_title]
+        if len(order) > 1 or section_title != "Results":
+            header = Label(
+                output_frame,
+                text=section_title,
+                bg=output_frame["bg"],
+                font=("Segoe UI", 11, "bold"),
+                fg=current_theme["fg"],
+            )
+            header.grid(row=row_counter, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 3))
+            output_widgets.append(header)
+            row_counter += 1
 
-          for standard_label, standard_value in results_list:
-              # Use the standard_label with the converter
-              display_label_text, display_value_str = converter.format_output_for_display(
-                  standard_label, standard_value, is_metric_mode
-              )
+        for standard_label, standard_value in results_list:
+            # Use the standard_label with the converter
+            display_label_text, display_value_str = converter.format_output_for_display(
+                standard_label, standard_value, is_metric_mode
+            )
 
-              # Render label and value widgets
-              output_label = Label(output_frame, text=f"{display_label_text}:", bg="#ffffe0", fg="black", anchor="w", font=("Segoe UI", 10))
-              output_label.grid(row=row_counter, column=0, sticky="w", padx=(20, 5), pady=1)
-              output_label.original_standard_label = standard_label # Store standard label
-              output_widgets.append(output_label)
+            # Render label and value widgets
+            output_label = Label(
+                output_frame,
+                text=f"{display_label_text}:",
+                bg=output_frame["bg"],
+                fg=current_theme["fg"],
+                anchor="w",
+                font=("Segoe UI", 10),
+            )
+            output_label.grid(row=row_counter, column=0, sticky="w", padx=(20, 5), pady=1)
+            output_label.original_standard_label = standard_label  # Store standard label
+            output_widgets.append(output_label)
 
-              output_value_label = Label(output_frame, text=display_value_str,
-                                         bg="#ffffff", fg="black", width=15, anchor="w", relief="sunken", borderwidth=1, font=("Segoe UI", 10))
-              output_value_label.grid(row=row_counter, column=1, sticky="w", padx=(5, 10), pady=1)
-              output_value_label.original_standard_value = standard_value # Store standard value
-              output_widgets.append(output_value_label)
-              row_counter += 1
+            output_value_label = Label(
+                output_frame,
+                text=display_value_str,
+                bg=current_theme["entry_bg"],
+                fg=current_theme["entry_fg"],
+                width=15,
+                anchor="w",
+                relief="sunken",
+                borderwidth=1,
+                font=("Segoe UI", 10),
+            )
+            output_value_label.grid(row=row_counter, column=1, sticky="w", padx=(5, 10), pady=1)
+            output_value_label.original_standard_value = standard_value  # Store standard value
+            output_widgets.append(output_value_label)
+            row_counter += 1
 
-     output_frame.grid_columnconfigure(0, weight=0); output_frame.grid_columnconfigure(1, weight=1)
+    output_frame.grid_columnconfigure(0, weight=0)
+    output_frame.grid_columnconfigure(1, weight=1)
 
 def prepopulate_outputs_for_case(case_function, output_frame_ref, output_widgets_ref, clear_outputs_fn):
     """
@@ -648,8 +774,14 @@ def prepopulate_outputs():
     if not current_case_function:
         return
 
-    output_frame.configure(bg="#ffffe0")
-    title_label = Label(output_frame, text="Output", bg="#ffffe0", font=("Segoe UI", 14, "bold"), fg="black")
+    output_frame.configure(bg=current_theme["output_bg"])
+    title_label = Label(
+        output_frame,
+        text="Output",
+        bg=output_frame["bg"],
+        font=("Segoe UI", 14, "bold"),
+        fg=current_theme["fg"],
+    )
     title_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 5))
     output_widgets.append(title_label)
 
@@ -707,20 +839,42 @@ def prepopulate_outputs():
 
     for section_title, labels in sections:
         if section_title:  # Header
-            header = Label(output_frame, text=section_title, bg="#ffffe0", font=("Segoe UI", 11, "bold"), fg="black")
+            header = Label(
+                output_frame,
+                text=section_title,
+                bg=output_frame["bg"],
+                font=("Segoe UI", 11, "bold"),
+                fg=current_theme["fg"],
+            )
             header.grid(row=row_counter, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 3))
             output_widgets.append(header)
             row_counter += 1
 
         for std_label in labels:
             display_label_text = converter.get_display_label(std_label, is_metric_mode)
-            lbl = Label(output_frame, text=f"{display_label_text}:", bg="#ffffe0", fg="black", anchor="w", font=("Segoe UI", 10))
+            lbl = Label(
+                output_frame,
+                text=f"{display_label_text}:",
+                bg=output_frame["bg"],
+                fg=current_theme["fg"],
+                anchor="w",
+                font=("Segoe UI", 10),
+            )
             lbl.grid(row=row_counter, column=0, sticky="w", padx=(20, 5), pady=1)
             lbl.original_standard_label = std_label
             output_widgets.append(lbl)
 
-            val = Label(output_frame, text="N/A", bg="#f0f0f0", fg="#666", width=15, anchor="w",
-                        relief="sunken", borderwidth=1, font=("Segoe UI", 10))
+            val = Label(
+                output_frame,
+                text="N/A",
+                bg=current_theme["entry_bg"],
+                fg="#666666",
+                width=15,
+                anchor="w",
+                relief="sunken",
+                borderwidth=1,
+                font=("Segoe UI", 10),
+            )
             val.grid(row=row_counter, column=1, sticky="w", padx=(5, 10), pady=1)
             val.original_standard_label = std_label
             output_widgets.append(val)
@@ -731,6 +885,369 @@ def prepopulate_outputs():
     output_frame.grid_columnconfigure(0, weight=0)
     output_frame.grid_columnconfigure(1, weight=1)
 
+def show_details_window():
+    """Opens a subwindow showing source table & plot(s) for the current duct case.
+
+    Modes (per CASE_PLOT_CONFIG):
+      - surface_3d:       single 3D surface from case table (x_col, y_col, z_col)
+      - compare_nearest_bilinear: two 3D surfaces (nearest vs bilinear) using the
+                                  case's _loss_coeff_nearest/_loss_coeff_bilinear
+      - dual_2d:          two 2D plots from separate table relationships
+                          (for legacy cases like A7A: ANGLE–K and R/D–C)
+    """
+    if not current_duct_id:
+        messagebox.showinfo("Details", "No duct case selected.")
+        return
+
+    if current_duct_id not in CASE_PLOT_CONFIG:
+        messagebox.showinfo(
+            "Details",
+            f"No details view configured yet for case '{current_duct_id}'.\n\n"
+            "We can add this case to CASE_PLOT_CONFIG later."
+        )
+        return
+
+    cfg = CASE_PLOT_CONFIG[current_duct_id]
+    mode = cfg.get("mode", "surface_3d")
+
+    try:
+        df = get_case_table(current_duct_id).copy()
+    except Exception as e:
+        messagebox.showerror("Details Error", f"Failed to load case table for {current_duct_id}:\n{e}")
+        return
+
+    case_name = duct_map.get(current_duct_id, {}).get("case", "")
+
+    # --- Build Details window ---
+    win = tk.Toplevel(root)
+    win.title(f"Details – {current_duct_id} {('– ' + case_name) if case_name else ''}")
+    win.geometry("900x600")
+
+    left_frame = tk.Frame(win, bg="white")
+    left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=5, pady=5)
+
+    right_frame = tk.Frame(win, bg="white")
+    right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    # --- Left: information + data preview ---
+    # Describe which columns we're using, based on mode
+    if mode in ("surface_3d", "compare_nearest_bilinear"):
+        x_col = cfg["x_col"]
+        y_col = cfg["y_col"]
+        z_col = cfg["z_col"]
+        src_label_text = (
+            f"Source case table\n"
+            f"  via: data_access.get_case_table('{current_duct_id}')\n"
+            f"  (typically 'Data set {current_duct_id}' in the main workbook\n"
+            f"   or an override in data/case_tables/{current_duct_id}.xlsx)\n\n"
+            f"Case ID: {current_duct_id}\n"
+            f"Case Name: {case_name or 'N/A'}\n\n"
+            f"Columns used:\n"
+            f"  X → {x_col}\n"
+            f"  Y → {y_col}\n"
+            f"  C → {z_col}\n"
+        )
+        needed_cols = [c for c in (x_col, y_col, z_col) if c in df.columns]
+    elif mode == "dual_2d":
+        angle_col = cfg["angle_col"]
+        k_col = cfg["k_col"]
+        rd_col = cfg["rd_col"]
+        c_col = cfg["c_col"]
+        src_label_text = (
+            f"Source case table\n"
+            f"  via: data_access.get_case_table('{current_duct_id}')\n"
+            f"  (typically 'Data set {current_duct_id}' in the main workbook\n"
+            f"   or an override in data/case_tables/{current_duct_id}.xlsx)\n\n"
+            f"Case ID: {current_duct_id}\n"
+            f"Case Name: {case_name or 'N/A'}\n\n"
+            f"Columns used:\n"
+            f"  ANGLE → {angle_col}, K → {k_col}\n"
+            f"  R/D   → {rd_col}, C → {c_col}\n"
+        )
+        needed_cols = [c for c in (angle_col, k_col, rd_col, c_col) if c in df.columns]
+    else:
+        src_label_text = (
+            f"Source case table\n"
+            f"  via: data_access.get_case_table('{current_duct_id}')\n\n"
+            f"Case ID: {current_duct_id}\n"
+            f"Case Name: {case_name or 'N/A'}\n\n"
+            f"(Unknown mode '{mode}' – using raw table preview only.)"
+        )
+        needed_cols = list(df.columns)
+
+    src_label = tk.Label(
+        left_frame,
+        text=src_label_text,
+        bg="white",
+        fg="#333333",
+        justify="left",
+        font=("Segoe UI", 9),
+    )
+    src_label.pack(anchor="nw", padx=5, pady=(5, 10))
+
+    preview_frame = tk.Frame(left_frame, bg="white")
+    preview_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    preview_text = tk.Text(
+        preview_frame,
+        wrap=tk.NONE,
+        font=("Courier New", 9),
+        bg="#f7f7f7",
+        fg="#000000",
+        height=20,
+        borderwidth=1,
+        relief="sunken",
+    )
+    preview_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    vsb = tk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=preview_text.yview)
+    vsb.pack(side=tk.RIGHT, fill=tk.Y)
+    preview_text.config(yscrollcommand=vsb.set)
+
+    # Restrict to columns we actually care about
+    try:
+        if needed_cols:
+            df_preview = df[needed_cols].dropna(how="all")
+        else:
+            df_preview = df
+        from tabulate import tabulate
+        table_str = tabulate(df_preview, headers="keys", tablefmt="psql", showindex=False, floatfmt=".4f")
+    except Exception:
+        table_str = df.to_string(index=False)
+
+    preview_text.insert("1.0", table_str)
+    preview_text.config(state=tk.DISABLED)
+
+    # --- Right: plot(s) ---
+    bg_color = "#000000" if is_dark_mode else "#ffffff"
+    fg_color = "#ffffff" if is_dark_mode else "#000000"
+
+    fig = Figure(figsize=(6.8, 4.6), dpi=100, facecolor=bg_color)
+
+    elev = 30
+    azim = 135
+
+    def style_axes3d(ax, title=None):
+        ax.set_facecolor(bg_color)
+        if title is not None:
+            ax.set_title(title, fontsize=9, color=fg_color)
+        ax.tick_params(colors=fg_color)
+        ax.xaxis.label.set_color(fg_color)
+        ax.yaxis.label.set_color(fg_color)
+        ax.zaxis.label.set_color(fg_color)
+
+    def style_axes2d(ax, title=None):
+        ax.set_facecolor(bg_color)
+        if title is not None:
+            ax.set_title(title, fontsize=9, color=fg_color)
+        ax.tick_params(colors=fg_color)
+        ax.xaxis.label.set_color(fg_color)
+        ax.yaxis.label.set_color(fg_color)
+        for spine in ax.spines.values():
+            spine.set_color(fg_color)
+
+    def style_colorbar(cbar, label_text):
+        cbar.set_label(label_text, color=fg_color)
+        cbar.ax.yaxis.set_tick_params(color=fg_color)
+        for tick in cbar.ax.get_yticklabels():
+            tick.set_color(fg_color)
+
+    # --- Mode: nearest vs bilinear comparison (A8G, A8H, etc.) ---
+    if mode == "compare_nearest_bilinear":
+        # Import helpers from the case's outputs module dynamically
+        try:
+            module_name = f"duct_functions.{current_duct_id}_outputs"
+            case_module = importlib.import_module(module_name)
+            _loss_coeff_nearest = getattr(case_module, "_loss_coeff_nearest")
+            _loss_coeff_bilinear = getattr(case_module, "_loss_coeff_bilinear")
+        except Exception as e:
+            messagebox.showerror(
+                "Details Error",
+                f"Could not import interpolation helpers for {current_duct_id}:\n{e}"
+            )
+            win.destroy()
+            return
+
+        x_col = cfg["x_col"]
+        y_col = cfg["y_col"]
+        z_col = cfg["z_col"]
+
+        angle_data = df[[x_col, y_col, z_col]].dropna().copy()
+        angle_data = angle_data.rename(columns={x_col: "ANGLE", y_col: "A1/A", z_col: "C"})
+
+        # Build a grid over ANGLE and A1/A
+        angles = np.linspace(angle_data["ANGLE"].min(), angle_data["ANGLE"].max(), 45)
+        ratios = np.linspace(angle_data["A1/A"].min(), angle_data["A1/A"].max(), 45)
+        A_grid, R_grid = np.meshgrid(angles, ratios)
+
+        C_nearest_grid = np.zeros_like(A_grid, dtype=float)
+        C_bilinear_grid = np.zeros_like(A_grid, dtype=float)
+
+        for i in range(R_grid.shape[0]):
+            for j in range(R_grid.shape[1]):
+                a = A_grid[i, j]
+                r = R_grid[i, j]
+                C_nearest_grid[i, j] = _loss_coeff_nearest(angle_data, a, r)
+                C_bilinear_grid[i, j] = _loss_coeff_bilinear(angle_data, a, r)
+
+        # Left: original nearest-grid method
+        ax1 = fig.add_subplot(1, 2, 1, projection="3d")
+        ax1.view_init(elev=elev, azim=azim)
+        ax1.set_xlabel(cfg["x_label"])
+        ax1.set_ylabel(cfg["y_label"])
+        ax1.set_zlabel(cfg["z_label"])
+        style_axes3d(ax1, title="Original: nearest grid point")
+
+        surf1 = ax1.plot_surface(
+            A_grid, R_grid, C_nearest_grid,
+            cmap="viridis",
+            linewidth=0,
+            antialiased=True,
+        )
+        ax1.scatter(
+            angle_data["ANGLE"], angle_data["A1/A"], angle_data["C"],
+            c="w" if is_dark_mode else "k", s=12, alpha=0.9, label="Table points"
+        )
+        ax1.legend(loc="upper left", fontsize=8, facecolor=bg_color, edgecolor=fg_color)
+        cbar1 = fig.colorbar(surf1, ax=ax1, shrink=0.6, pad=0.08)
+        style_colorbar(cbar1, cfg["z_label"])
+
+        # Right: new bilinear interpolation method
+        ax2 = fig.add_subplot(1, 2, 2, projection="3d")
+        ax2.view_init(elev=elev, azim=azim)
+        ax2.set_xlabel(cfg["x_label"])
+        ax2.set_ylabel(cfg["y_label"])
+        ax2.set_zlabel(cfg["z_label"])
+        style_axes3d(ax2, title="New: bilinear interpolation")
+
+        surf2 = ax2.plot_surface(
+            A_grid, R_grid, C_bilinear_grid,
+            cmap="viridis",
+            linewidth=0,
+            antialiased=True,
+        )
+        ax2.scatter(
+            angle_data["ANGLE"], angle_data["A1/A"], angle_data["C"],
+            c="w" if is_dark_mode else "k", s=12, alpha=0.9, label="Table points"
+        )
+        ax2.legend(loc="upper left", fontsize=8, facecolor=bg_color, edgecolor=fg_color)
+        cbar2 = fig.colorbar(surf2, ax=ax2, shrink=0.6, pad=0.08)
+        style_colorbar(cbar2, cfg["z_label"])
+
+        fig.suptitle(cfg["title"], fontsize=11, color=fg_color)
+        fig.subplots_adjust(left=0.05, right=0.97, top=0.88, bottom=0.08, wspace=0.28)
+
+    # --- Mode: generic 3D surface from table (A13C, etc.) ---
+    elif mode == "surface_3d":
+        x_col = cfg["x_col"]
+        y_col = cfg["y_col"]
+        z_col = cfg["z_col"]
+
+        if not {x_col, y_col, z_col}.issubset(df.columns):
+            ax = fig.add_subplot(111)
+            style_axes2d(ax)
+            ax.text(
+                0.5, 0.5,
+                f"Case table for {current_duct_id} is missing\n"
+                f"required columns {x_col}, {y_col}, {z_col}.",
+                ha="center", va="center", color=fg_color, transform=ax.transAxes,
+            )
+        else:
+            ax = fig.add_subplot(111, projection="3d")
+            ax.view_init(elev=elev, azim=azim)
+            ax.set_xlabel(cfg["x_label"])
+            ax.set_ylabel(cfg["y_label"])
+            ax.set_zlabel(cfg["z_label"])
+            style_axes3d(ax, title=cfg["title"])
+
+            try:
+                pivot = df[[x_col, y_col, z_col]].dropna().pivot(
+                    index=y_col, columns=x_col, values=z_col
+                )
+                pivot = pivot.sort_index().sort_index(axis=1)
+
+                x_vals = pivot.columns.values
+                y_vals = pivot.index.values
+                X, Y = np.meshgrid(x_vals, y_vals)
+                Z = pivot.values
+
+                surf = ax.plot_surface(
+                    X, Y, Z,
+                    cmap="viridis",
+                    linewidth=0,
+                    antialiased=True,
+                )
+
+                ax.scatter(
+                    df[x_col], df[y_col], df[z_col],
+                    c="w" if is_dark_mode else "k", s=12, alpha=0.9, label="Table points"
+                )
+                ax.legend(loc="upper left", fontsize=8, facecolor=bg_color, edgecolor=fg_color)
+                cbar = fig.colorbar(surf, ax=ax, shrink=0.7, pad=0.1)
+                style_colorbar(cbar, cfg["z_label"])
+                fig.subplots_adjust(left=0.08, right=0.95, top=0.9, bottom=0.1)
+            except Exception as e:
+                ax.text(
+                    0.5, 0.5,
+                    f"Could not generate 3D plot:\n{e}",
+                    ha="center", va="center",
+                    transform=ax.transAxes,
+                    color=fg_color,
+                )
+                ax.set_axis_off()
+
+    # --- Mode: dual 2D plots (legacy A7A) ---
+    elif mode == "dual_2d":
+        angle_col = cfg["angle_col"]
+        k_col = cfg["k_col"]
+        rd_col = cfg["rd_col"]
+        c_col = cfg["c_col"]
+
+        ax1 = fig.add_subplot(2, 1, 1)
+        style_axes2d(ax1, title="Angle correction factor K vs Angle")
+        try:
+            df_angle = df[[angle_col, k_col]].dropna().sort_values(by=angle_col)
+            ax1.plot(df_angle[angle_col], df_angle[k_col], "o-")
+            ax1.set_xlabel(cfg["angle_label"])
+            ax1.set_ylabel(cfg["k_label"])
+        except Exception as e:
+            ax1.text(
+                0.5, 0.5,
+                f"Could not plot K vs Angle:\n{e}",
+                ha="center", va="center", transform=ax1.transAxes, color=fg_color,
+            )
+
+        ax2 = fig.add_subplot(2, 1, 2)
+        style_axes2d(ax2, title="Base loss coefficient C vs R/D")
+        try:
+            df_rd = df[[rd_col, c_col]].dropna().sort_values(by=rd_col)
+            ax2.plot(df_rd[rd_col], df_rd[c_col], "o-")
+            ax2.set_xlabel(cfg["rd_label"])
+            ax2.set_ylabel(cfg["c_label"])
+        except Exception as e:
+            ax2.text(
+                0.5, 0.5,
+                f"Could not plot C vs R/D:\n{e}",
+                ha="center", va="center", transform=ax2.transAxes, color=fg_color,
+            )
+
+        fig.suptitle(cfg["title"], fontsize=11, color=fg_color)
+        fig.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.1, hspace=0.4)
+
+    else:
+        ax = fig.add_subplot(111)
+        style_axes2d(ax)
+        ax.text(
+            0.5, 0.5,
+            f"No plotting logic for mode '{mode}'.",
+            ha="center", va="center", transform=ax.transAxes, color=fg_color,
+        )
+
+    # Embed the figure in the Tk window
+    canvas_fig = FigureCanvasTkAgg(fig, master=right_frame)
+    canvas_widget = canvas_fig.get_tk_widget()
+    canvas_widget.pack(fill=tk.BOTH, expand=True)
+    canvas_fig.draw()
 
 def update_inputs_and_outputs(duct_id):
     """Main function called on tree select. Updates inputs, loads function, prepopulates outputs."""
@@ -744,7 +1261,7 @@ def update_inputs_and_outputs(duct_id):
     input_entries.clear()  # 🔧 Clear global tracking lists explicitly
     input_widgets.clear()
     current_case_function = None
-    input_frame.configure(bg="#eaf4ff")
+    input_frame.configure(bg=current_theme["input_bg"])
 
     # --- Special Handling (e.g., A12G) ---
     if duct_id == "A12G":
@@ -782,7 +1299,7 @@ def update_inputs_and_outputs(duct_id):
                 input_frame,
                 text=error_msg,
                 fg="red",
-                bg="#eaf4ff",
+                bg=input_frame["bg"],
                 wraplength=input_frame.winfo_width() - 20,
             )
             lbl.pack(padx=10, pady=10)
@@ -828,8 +1345,8 @@ def update_inputs_and_outputs(duct_id):
             title_label = Label(
                 input_frame,
                 text=f"Input Parameters ({duct_id})",
-                bg="#eaf4ff",
-                fg="black",
+                bg=input_frame["bg"],
+                fg=current_theme["fg"],
                 font=("Segoe UI", 14, "bold"),
             )
             title_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 10))
@@ -1032,7 +1549,7 @@ def update_inputs_and_outputs(duct_id):
                 input_frame,
                 text=f"Error displaying inputs for '{duct_id}'.",
                 fg="red",
-                bg="#eaf4ff",
+                bg=input_frame["bg"],
             )
             lbl.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=5)
             input_widgets.append(lbl)
@@ -1135,6 +1652,12 @@ duct_map = {
     "A12A2": {"case": "Duct Mounted in Wall", "image": "entry_rect_duct_mounted_in_wall.png"},
     "A12D2": {"case": "Smooth Converging Bellmouth, without End Wall", "image": "entry_rect_smooth_converging_bellmouth_without_end_wall.png"},
     "A12E2": {"case": "Smooth Converging Bellmouth, with End Wall", "image": "entry_rect_smooth_converging_bellmouth_with_end_wall.png"},
+    # Rectangular > Exits
+    "A13A": {"case": "Rectangular Flat Exit", "image": "rect_flat_exit.png"},
+    "A13C": {"case": "Rectangular Conical Exit with/without Wall", "image": "rect_conical_exit_with_without_wall.png"},
+    "A13D": {"case": "Rectangular to Round Exit", "image": "rect_to_round_exit.png"},
+    "A13E2": {"case": "Rectangular Slot Exit", "image": "rect_slot_exit.png"},
+    "A13F1": {"case": "Rectangular to Round Conical Exit", "image": "rect_to_round_conical_exit.png"},
 }
 
 categories_map = {
@@ -1153,13 +1676,47 @@ categories_map = {
         "Converging Junctions (Tees, Wyes)": ["A10C", "A10D", "A10F", "A10G", "A10H", "A10I2"],
         "Diverging Junctions (Tees, Wyes)": ["A11N", "A11O", "A11P", "A11Q", "A11R", "A11S", "A11T", "A11U", "A11V", "A11W", "A11X", "A11Y"],
         "Entries": ["A12A2", "A12D2", "A12E2"],
+        "Exits": ["A13A", "A13C", "A13D", "A13E2", "A13F1"]
     },
 }
 
+# --- Case plot configuration (for Details window) ---
+CASE_PLOT_CONFIG = {
+    # Rectangular Conical Exit
+    "A13C": {
+        "title": "A13C: Rectangular Conical Exit with/without Wall",
+        "x_col": "As/A",      # area ratio column in case table
+        "y_col": "ANGLE",     # degrees
+        "z_col": "C",         # loss coefficient
+        "x_label": "Area Ratio As/A (-)",
+        "y_label": "Angle (deg)",
+        "z_label": "Loss Coefficient C (-)",
+    },
+    # Golden example: A8H with nearest vs bilinear comparison
+    "A8H": {
+        "title": "A8H: Asymmetric at Fan with Sides Straight Top 10° Down",
+        "x_col": "ANGLE",
+        "y_col": "A1/A",
+        "z_col": "C",
+        "x_label": "Angle (deg)",
+        "y_label": "Area Ratio A1/A (-)",
+        "z_label": "Loss Coefficient C (-)",
+    },
+    "A8G": {
+        "title": "A8G: Asymmetric at Fan with Sides Straight, Top Level",
+        "x_col": "ANGLE",
+        "y_col": "A1/A",
+        "z_col": "C",
+        "x_label": "Angle (deg)",
+        "y_label": "Area Ratio A1/A (-)",
+        "z_label": "Loss Coefficient C (-)",
+    },
+}
 
-# --- Image Display Function ---
+# --- Treeview Selection Handler ---
 def display_image(image_file=DEFAULT_IMAGE):
-    """Displays the specified image, centered and aspect-ratio preserved."""
+    """Displays the specified image, centered and aspect-ratio preserved.
+       In dark mode, show a color-inverted (negative) version on a dark canvas."""
     canvas.delete("all")
     img_path = os.path.join(IMAGE_FOLDER, image_file)
     status_text = ""
@@ -1168,46 +1725,195 @@ def display_image(image_file=DEFAULT_IMAGE):
             status_text = f"Image file not found:\n{image_file}"
             print(f"[ERROR] {status_text}")
             if image_file != DEFAULT_IMAGE:
-                 img_path = os.path.join(IMAGE_FOLDER, DEFAULT_IMAGE)
-                 if not os.path.exists(img_path): status_text += f"\n\nDefault image missing:\n{DEFAULT_IMAGE}"; raise FileNotFoundError(status_text)
-                 else: print(f"[WARN] Displaying default image: {DEFAULT_IMAGE}")
-            else: raise FileNotFoundError(status_text)
-        img = Image.open(img_path)
-        canvas_width = canvas.winfo_width(); canvas_height = canvas.winfo_height()
-        if canvas_width <= 1 or canvas_height <= 1: canvas.after(150, lambda: display_image(image_file)); return
-        img_width, img_height = img.size; img_aspect = img_width / img_height; canvas_aspect = canvas_width / canvas_height
+                img_path = os.path.join(IMAGE_FOLDER, DEFAULT_IMAGE)
+                if not os.path.exists(img_path):
+                    status_text += f"\n\nDefault image missing:\n{DEFAULT_IMAGE}"
+                    raise FileNotFoundError(status_text)
+                else:
+                    print(f"[WARN] Displaying default image: {DEFAULT_IMAGE}")
+            else:
+                raise FileNotFoundError(status_text)
+
+        img = Image.open(img_path).convert("RGB")
+
+        # --- Dark mode: show negative image for better contrast ---
+        if is_dark_mode:
+            img = ImageOps.invert(img)
+
+        canvas_width = canvas.winfo_width()
+        canvas_height = canvas.winfo_height()
+        if canvas_width <= 1 or canvas_height <= 1:
+            canvas.after(150, lambda: display_image(image_file))
+            return
+
+        img_width, img_height = img.size
+        img_aspect = img_width / img_height
+        canvas_aspect = canvas_width / canvas_height
+
         pad_factor = 0.95
-        if img_aspect > canvas_aspect: new_width = int(canvas_width * pad_factor); new_height = int(new_width / img_aspect)
-        else: new_height = int(canvas_height * pad_factor); new_width = int(new_height * img_aspect)
-        if new_width < 1 or new_height < 1: status_text = "Image display error:\nCalculated size too small."; raise ValueError(status_text)
+        if img_aspect > canvas_aspect:
+            new_width = int(canvas_width * pad_factor)
+            new_height = int(new_width / img_aspect)
+        else:
+            new_height = int(canvas_height * pad_factor)
+            new_width = int(new_height * img_aspect)
+
+        if new_width < 1 or new_height < 1:
+            status_text = "Image display error:\nCalculated size too small."
+            raise ValueError(status_text)
+
         img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(img_resized)
-        x_center = (canvas_width - new_width) // 2; y_center = (canvas_height - new_height) // 2
+
+        x_center = (canvas_width - new_width) // 2
+        y_center = (canvas_height - new_height) // 2
         canvas.create_image(x_center, y_center, image=photo, anchor=NW)
         canvas.image = photo
-    except FileNotFoundError as e: print(f"[ERROR] Image file missing: {e}"); canvas.create_text(canvas.winfo_width() / 2, canvas.winfo_height() / 2, text=status_text, fill="red", font=("Segoe UI", 12), justify="center")
-    except Exception as e: print(f"[ERROR] Failed to display image '{image_file}': {e}"); traceback.print_exc(); status_text = f"Error loading image:\n{os.path.basename(image_file)}\n\nDetails in console."; canvas.create_text(canvas.winfo_width() / 2, canvas.winfo_height() / 2, text=status_text, fill="red", font=("Segoe UI", 12), justify="center")
 
+    except FileNotFoundError as e:
+        print(f"[ERROR] Image file missing: {e}")
+        canvas.create_text(
+            canvas.winfo_width() / 2,
+            canvas.winfo_height() / 2,
+            text=status_text,
+            fill="red",
+            font=("Segoe UI", 12),
+            justify="center",
+        )
+    except Exception as e:
+        print(f"[ERROR] Failed to display image '{image_file}': {e}")
+        traceback.print_exc()
+        status_text = (
+            f"Error loading image:\n{os.path.basename(image_file)}\n\nDetails in console."
+        )
+        canvas.create_text(
+            canvas.winfo_width() / 2,
+            canvas.winfo_height() / 2,
+            text=status_text,
+            fill="red",
+            font=("Segoe UI", 12),
+            justify="center",
+        )
+
+def apply_theme():
+    """Apply current_theme colors to main widgets and ttk styles."""
+    global style
+
+    # Root window
+    root.configure(bg=current_theme["bg"])
+
+    # Top ribbon
+    top_ribbon.configure(bg=current_theme["ribbon_bg"])
+    mode_label.configure(
+        bg=current_theme["ribbon_bg"],
+        fg="#4ade80" if is_metric_mode else "#f87171"
+    )
+
+    # Frames
+    tree_frame.configure(bg=current_theme["panel_bg"])
+    right_top_frame.configure(bg=current_theme["panel_bg"])
+    input_frame.configure(bg=current_theme["input_bg"])
+    output_frame.configure(bg=current_theme["output_bg"])
+    image_frame.configure(bg=current_theme["image_bg"])
+
+    # Canvas
+    canvas.configure(bg=current_theme["canvas_bg"])
+
+    # Buttons (re-style with current theme)
+    for btn in (save_btn, view_btn, clear_btn, details_btn, unit_toggle, theme_toggle):
+        style_button(btn, variant="danger" if btn is clear_btn else "normal")
+
+    # ttk Treeview style
+    style.configure(
+        "Treeview",
+        rowheight=28,
+        font=('Segoe UI', 10),
+        background=current_theme["tree_bg"],
+        fieldbackground=current_theme["tree_bg"],
+        foreground=current_theme["tree_fg"],
+    )
+    style.map("Treeview", background=[('selected', current_theme["tree_sel_bg"])])
+
+    style.configure(
+        "Treeview.Heading",
+        font=('Segoe UI', 11, 'bold'),
+        background=current_theme["ribbon_bg"],
+        relief="flat",
+        foreground=current_theme["fg"],
+    )
+
+    # Existing labels/entries inside input/output frames created so far
+    for frame in (input_frame, output_frame):
+        for w in frame.winfo_children():
+            cls = w.winfo_class()
+            try:
+                if cls == "Label":
+                    w.configure(
+                        bg=frame["bg"],
+                        fg=current_theme["fg"]
+                    )
+                elif cls == "Entry":
+                    w.configure(
+                        bg=current_theme["entry_bg"],
+                        fg=current_theme["entry_fg"],
+                        insertbackground=current_theme["entry_fg"],  # caret color
+                    )
+                elif cls == "TCombobox":
+                    # ttk widgets take theme from ttk style; often fine to leave as-is,
+                    # or create a custom Combobox style if you want them fully dark.
+                    pass
+            except tk.TclError:
+                pass  # some ttk widgets may not accept direct bg/fg   
+
+def toggle_theme():
+    global is_dark_mode, current_theme
+    is_dark_mode = not is_dark_mode
+    current_theme = DARK_THEME if is_dark_mode else LIGHT_THEME
+    print(f"[INFO] Theme toggled to: {'Dark' if is_dark_mode else 'Light'}")
+    apply_theme()
 # --- Treeview Selection Handler ---
 def on_tree_select(event):
-    """Handles TreeView selection: updates image and input fields."""
-    selected_item_id = tree.focus()
-    if not selected_item_id: return
-    item_data = tree.item(selected_item_id)
-    duct_id_tuple = item_data.get("values")
-    if duct_id_tuple and len(duct_id_tuple) > 0:
-        duct_id = duct_id_tuple[0]
-        if duct_id in duct_map:
-            case_name = duct_map[duct_id]['case']
-            print(f"[INFO] Tree selection: {duct_id} - {case_name}")
-            display_image(duct_map[duct_id]["image"])
-            update_inputs_and_outputs(duct_id) # Main UI update function
-        else: print(f"[WARNING] Selected Duct ID '{duct_id}' not in duct_map."); display_image(DEFAULT_IMAGE); clear_inputs(); clear_outputs()
-    else: category_name = item_data.get("text", "Unknown Category"); print(f"[DEBUG] Selected category: {category_name}")
+    """Handle selection in the duct tree: load inputs/outputs, image, and enable Details."""
+    selected_item = tree.focus()
+    if not selected_item:
+        return
 
+    item = tree.item(selected_item)
+    values = item.get("values", ())
 
+    # Non-leaf nodes (Round / Rectangular / category) have no values
+    if not values:
+        # Disable Details if user just clicks a folder node
+        details_btn.config(state="disabled")
+        return
+
+    duct_id = values[0]
+
+    if duct_id not in duct_map:
+        print(f"[WARN] Selected duct_id '{duct_id}' not found in duct_map.")
+        details_btn.config(state="disabled")
+        return
+
+    # Update inputs & outputs for this duct
+    update_inputs_and_outputs(duct_id)
+
+    # Update image for this duct
+    image_file = duct_map[duct_id].get("image", DEFAULT_IMAGE)
+    display_image(image_file)
+
+    # Enable/disable Details button depending on whether we have a plot config
+    if duct_id in CASE_PLOT_CONFIG:
+        details_btn.config(state="normal")
+    else:
+        details_btn.config(state="disabled")
+
+    print(f"[INFO] Tree selection changed to duct '{duct_id}'")
+ 
 # --- Main GUI Construction (`if __name__ == "__main__":`) ---
 if __name__ == "__main__":
+    # Preload all interpolation surfaces (A13C etc.) once at startup
+    preload_all_case_interpolators()
+
     root = Tk()
     root.title("Duct Pressure Loss Calculator (SMACNA)")
     root.minsize(1200, 700); root.geometry("1400x850")
@@ -1228,11 +1934,55 @@ if __name__ == "__main__":
     
     top_ribbon = Frame(root, bg="#e0e0e0", bd=1, relief="raised")
     top_ribbon.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 5))
-    save_btn = Button(top_ribbon, text="Save Log", command=save_log_to_excel); style_button(save_btn, bg_color="#d0e0d0", active_bg="#b0c0b0"); save_btn.pack(side="left", padx=(10, 5), pady=5)
-    view_btn = Button(top_ribbon, text="View Log", command=view_log_popup); style_button(view_btn); view_btn.pack(side="left", padx=5, pady=5)
-    clear_btn = Button(top_ribbon, text="Clear Log", command=lambda: (calculation_log.clear(), print("[INFO] Log Cleared"), messagebox.showinfo("Log Cleared", "Calculation log has been cleared."))); style_button(clear_btn, bg_color="#f0d0d0", active_bg="#e0b0b0"); clear_btn.pack(side="left", padx=5, pady=5)
-    mode_label = Label(top_ribbon, text="Mode: Standard", bg="#e0e0e0", fg="#cc0000", font=("Segoe UI", 10, "bold")); mode_label.pack(side="right", padx=(20, 10))
-    unit_toggle = Button(top_ribbon, text="Toggle Units", command=toggle_units); style_button(unit_toggle); unit_toggle.pack(side="right", padx=5)
+
+    # --- Log buttons ---
+    save_btn = Button(top_ribbon, text="Save Log", command=save_log_to_excel)
+    style_button(save_btn)  # normal
+    save_btn.pack(side="left", padx=5, pady=5)
+
+    view_btn = Button(top_ribbon, text="View Log", command=view_log_popup)
+    style_button(view_btn)  # normal
+    view_btn.pack(side="left", padx=5, pady=5)
+
+    clear_btn = Button(
+        top_ribbon,
+        text="Clear Log",
+        command=lambda: (
+            calculation_log.clear(),
+            print("[INFO] Log Cleared"),
+            messagebox.showinfo("Log Cleared", "Calculation log has been cleared.")
+        )
+    )
+    style_button(clear_btn, variant="danger")
+    clear_btn.pack(side="left", padx=5, pady=5)
+
+    # --- Details button (enabled only when a supported case is selected) ---
+    details_btn = Button(
+        top_ribbon,
+        text="Details",
+        command=show_details_window,
+        state="disabled",
+    )
+    style_button(details_btn)
+    details_btn.pack(side="left", padx=5, pady=5)
+
+    # --- Mode / unit + theme controls on the right ---
+    mode_label = Label(
+        top_ribbon,
+        text="Mode: Standard",
+        bg="#e0e0e0",
+        fg="#cc0000",
+        font=("Segoe UI", 10, "bold")
+    )
+    mode_label.pack(side="right", padx=(20, 10))
+
+    unit_toggle = Button(top_ribbon, text="Toggle Units", command=toggle_units)
+    style_button(unit_toggle)
+    unit_toggle.pack(side="right", padx=5)
+
+    theme_toggle = Button(top_ribbon, text="Toggle Theme", command=toggle_theme)
+    style_button(theme_toggle)
+    theme_toggle.pack(side="right", padx=5)
 
     main_pane = PanedWindow(root, orient=HORIZONTAL, sashrelief=RAISED, sashwidth=6, bg='lightgrey')
     main_pane.grid(row=1, column=0, columnspan=3, rowspan=2, sticky="nsew", padx=5, pady=5)
