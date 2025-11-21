@@ -1,8 +1,7 @@
 import numpy as np
 import pandas as pd
-from tkinter import filedialog, messagebox  # Added messagebox
+from tkinter import filedialog, messagebox
 import tkinter as tk
-import importlib
 from tkinter import *
 from tkinter import ttk
 from PIL import Image, ImageTk, ImageOps
@@ -10,32 +9,34 @@ from tabulate import tabulate
 import datetime
 import sys
 import os
-import traceback  # For detailed error logging
+from pathlib import Path
+import traceback
 import scipy
-from interpolation_manager import preload_all_case_interpolators, get_case_interpolator
+import importlib
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
-from data_access import get_case_table
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  # needed for 3D projection   
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  # needed for 3D projection
 
 # --- Path setup so the app behaves like before, even after repo re-org ---
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = Path(__file__).resolve().parent
 
 # Make sure src/, duct_functions/, and special_cases/ are importable like before
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-DUCT_FUNCTIONS_DIR = os.path.join(SCRIPT_DIR, "duct_functions")
-SPECIAL_CASES_DIR = os.path.join(SCRIPT_DIR, "special_cases")
+DUCT_FUNCTIONS_DIR = SCRIPT_DIR / "duct_functions"
+SPECIAL_CASES_DIR = SCRIPT_DIR / "special_cases"
 for p in (DUCT_FUNCTIONS_DIR, SPECIAL_CASES_DIR):
-    if os.path.isdir(p) and p not in sys.path:
-        sys.path.insert(0, p)
+    if p.is_dir() and str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
-# Use shared config for data + figures
+# Use shared config + local modules
 from config import EXCEL_FILE_PATH, FIGURES_DIR, get_data_file_path
+from interpolation_manager import preload_all_case_interpolators, get_case_interpolator
+from data_access import get_case_table
 
 # --- Configuration ---
-IMAGE_FOLDER = str(FIGURES_DIR)  # points at repo_root/duct_figures
+IMAGE_FOLDER = FIGURES_DIR  # Path object; points at repo_root/duct_figures
 DEFAULT_IMAGE = "jacobs_smacna_logos.png"
 
 # --- Unit Conversion Class ---
@@ -137,20 +138,31 @@ class UnitConverter:
         return metric_label
 
 # --- Global Variables & Setup ---
-try:
-    if not os.path.exists(EXCEL_FILE_PATH):
-         raise FileNotFoundError(f"Excel file not found at resolved path: {EXCEL_FILE_PATH}")
-    data = pd.read_excel(EXCEL_FILE_PATH, sheet_name="Master Table")
-    data.set_index("ID", inplace=True)
-    print(f"[INFO] Successfully loaded Excel data from: {EXCEL_FILE_PATH}")
-except FileNotFoundError as e:
-    print(f"[ERROR] {e}")
-    messagebox.showerror("Error", f"Could not find the Excel data file:\n{EXCEL_FILE_PATH}\nPlease ensure it's in the correct location.")
-    data = pd.DataFrame()
-except Exception as e:
-    print(f"[ERROR] Could not load Excel data: {e}")
-    messagebox.showerror("Error", f"Failed to load data from Excel file:\n{e}")
-    data = pd.DataFrame()
+data = pd.DataFrame()  # global placeholder; will be loaded after Tk exists
+
+def load_excel_data():
+    """Load the main Excel data into the global `data` DataFrame."""
+    global data
+    try:
+        if not EXCEL_FILE_PATH.exists():
+            raise FileNotFoundError(f"Excel file not found at resolved path: {EXCEL_FILE_PATH}")
+        data = pd.read_excel(str(EXCEL_FILE_PATH), sheet_name="Master Table")
+        data.set_index("ID", inplace=True)
+        print(f"[INFO] Successfully loaded Excel data from: {EXCEL_FILE_PATH}")
+    except FileNotFoundError as e:
+        print(f"[ERROR] {e}")
+        messagebox.showerror(
+            "Error",
+            f"Could not find the Excel data file:\n{EXCEL_FILE_PATH}\nPlease ensure it's in the correct location."
+        )
+        data = pd.DataFrame()
+    except Exception as e:
+        print(f"[ERROR] Could not load Excel data: {e}")
+        messagebox.showerror(
+            "Error",
+            f"Failed to load data from Excel file:\n{e}"
+        )
+        data = pd.DataFrame()
 
 input_columns = ["input 1", "input 2", "input 3", "input 4", "input 5", "input 6", "input 7", "input 8"]
 
@@ -1842,6 +1854,7 @@ CASE_PLOT_CONFIG = {
         "x_label": "Area Ratio As/A (-)",
         "y_label": "Angle (deg)",
         "z_label": "Loss Coefficient C (-)",
+        "mode": "surface_3d",  # <<< explicit
     },
     # Golden example: A8H with nearest vs bilinear comparison
     "A8H": {
@@ -1852,6 +1865,7 @@ CASE_PLOT_CONFIG = {
         "x_label": "Angle (deg)",
         "y_label": "Area Ratio A1/A (-)",
         "z_label": "Loss Coefficient C (-)",
+        "mode": "compare_nearest_bilinear",  # <<< explicit
     },
     "A8G": {
         "title": "A8G: Asymmetric at Fan with Sides Straight, Top Level",
@@ -1861,6 +1875,7 @@ CASE_PLOT_CONFIG = {
         "x_label": "Angle (deg)",
         "y_label": "Area Ratio A1/A (-)",
         "z_label": "Loss Coefficient C (-)",
+        "mode": "compare_nearest_bilinear",  # or "surface_3d" if you prefer
     },
 }
 
@@ -1869,15 +1884,15 @@ def display_image(image_file=DEFAULT_IMAGE):
     """Displays the specified image, centered and aspect-ratio preserved.
        In dark mode, show a color-inverted (negative) version on a dark canvas."""
     canvas.delete("all")
-    img_path = os.path.join(IMAGE_FOLDER, image_file)
+    img_path = IMAGE_FOLDER / image_file  # Path object
     status_text = ""
     try:
-        if not os.path.exists(img_path):
+        if not img_path.exists():
             status_text = f"Image file not found:\n{image_file}"
             print(f"[ERROR] {status_text}")
             if image_file != DEFAULT_IMAGE:
-                img_path = os.path.join(IMAGE_FOLDER, DEFAULT_IMAGE)
-                if not os.path.exists(img_path):
+                img_path = IMAGE_FOLDER / DEFAULT_IMAGE
+                if not img_path.exists():
                     status_text += f"\n\nDefault image missing:\n{DEFAULT_IMAGE}"
                     raise FileNotFoundError(status_text)
                 else:
@@ -2022,6 +2037,24 @@ def toggle_theme():
     current_theme = DARK_THEME if is_dark_mode else LIGHT_THEME
     print(f"[INFO] Theme toggled to: {'Dark' if is_dark_mode else 'Light'}")
     apply_theme()
+
+def maximize_window(root):
+    """Try to maximize the window in a cross-platform way."""
+    try:
+        # Works on most Windows and some macOS/Linux Tk builds
+        root.state("zoomed")
+        return
+    except tk.TclError:
+        pass
+
+    # Fallback: manually resize to full screen
+    try:
+        w = root.winfo_screenwidth()
+        h = root.winfo_screenheight()
+        root.geometry(f"{w}x{h}+0+0")
+    except Exception as e:
+        print(f"[WARN] Could not maximize window: {e}")
+
 # --- Treeview Selection Handler ---
 def on_tree_select(event):
     """Handle selection in the duct tree: load inputs/outputs, image, and enable Details."""
@@ -2060,29 +2093,52 @@ def on_tree_select(event):
 
     print(f"[INFO] Tree selection changed to duct '{duct_id}'")
  
-# --- Main GUI Construction (`if __name__ == "__main__":`) ---
+# --- Main GUI Construction ---
+# --- Main GUI Construction ---
 if __name__ == "__main__":
     # Preload all interpolation surfaces (A13C etc.) once at startup
     preload_all_case_interpolators()
 
     root = Tk()
     root.title("Duct Pressure Loss Calculator (SMACNA)")
-    root.minsize(1200, 700); root.geometry("1400x850")
-    try: root.state("zoomed")
-    except TclError: print("[WARN] Could not maximize window via state('zoomed').")
-    root.lift(); root.attributes('-topmost', True); root.update(); root.attributes('-topmost', False); root.focus_force()
+    root.minsize(1200, 700)
+    root.geometry("1400x850")
+    maximize_window(root)
+    root.lift()
+    root.attributes('-topmost', True)
+    root.update()
+    root.attributes('-topmost', False)
+    root.focus_force()
 
     style = ttk.Style()
-    available_themes = style.theme_names(); preferred_themes = ['clam', 'vista', 'xpnative', 'default']
+    available_themes = style.theme_names()
+    preferred_themes = ['clam', 'vista', 'xpnative', 'default']
     for theme in preferred_themes:
         if theme in available_themes:
-            try: style.theme_use(theme); print(f"[INFO] Using theme: {theme}"); break
-            except TclError: continue
-    style.configure("Treeview", rowheight=28, font=('Segoe UI', 10), background="#ffffff", fieldbackground="#ffffff", foreground="#000000")
+            try:
+                style.theme_use(theme)
+                print(f"[INFO] Using theme: {theme}")
+                break
+            except TclError:
+                continue
+
+    style.configure(
+        "Treeview",
+        rowheight=28,
+        font=('Segoe UI', 10),
+        background="#ffffff",
+        fieldbackground="#ffffff",
+        foreground="#000000",
+    )
     style.map("Treeview", background=[('selected', '#cce5ff')])
-    style.configure("Treeview.Heading", font=('Segoe UI', 11, 'bold'), background="#e0e0e0", relief="flat")
-    style.map("Treeview.Heading", relief=[('active','groove'),('pressed','sunken')])
-    
+    style.configure(
+        "Treeview.Heading",
+        font=('Segoe UI', 11, 'bold'),
+        background="#e0e0e0",
+        relief="flat",
+    )
+    style.map("Treeview.Heading", relief=[('active', 'groove'), ('pressed', 'sunken')])
+
     top_ribbon = Frame(root, bg="#e0e0e0", bd=1, relief="raised")
     top_ribbon.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 5))
 
@@ -2137,23 +2193,57 @@ if __name__ == "__main__":
 
     main_pane = PanedWindow(root, orient=HORIZONTAL, sashrelief=RAISED, sashwidth=6, bg='lightgrey')
     main_pane.grid(row=1, column=0, columnspan=3, rowspan=2, sticky="nsew", padx=5, pady=5)
-    tree_frame = Frame(main_pane, bg="lightgrey", width=350); main_pane.add(tree_frame, stretch="never")
-    right_pane_container = PanedWindow(main_pane, orient=VERTICAL, sashrelief=RAISED, sashwidth=6, bg='white'); main_pane.add(right_pane_container, stretch="always")
 
-    tree = ttk.Treeview(tree_frame, selectmode="browse"); tree.heading("#0", text="Duct Fitting Cases", anchor=W); tree.column("#0", width=320, anchor=W, stretch=YES)
-    tree_vsb = Scrollbar(tree_frame, orient=VERTICAL, command=tree.yview); tree_hsb = Scrollbar(tree_frame, orient=HORIZONTAL, command=tree.xview)
+    tree_frame = Frame(main_pane, bg="lightgrey", width=350)
+    main_pane.add(tree_frame, stretch="never")
+
+    right_pane_container = PanedWindow(
+        main_pane,
+        orient=VERTICAL,
+        sashrelief=RAISED,
+        sashwidth=6,
+        bg='white'
+    )
+    main_pane.add(right_pane_container, stretch="always")
+
+    tree = ttk.Treeview(tree_frame, selectmode="browse")
+    tree.heading("#0", text="Duct Fitting Cases", anchor=W)
+    tree.column("#0", width=320, anchor=W, stretch=YES)
+
+    tree_vsb = Scrollbar(tree_frame, orient=VERTICAL, command=tree.yview)
+    tree_hsb = Scrollbar(tree_frame, orient=HORIZONTAL, command=tree.xview)
     tree.configure(yscrollcommand=tree_vsb.set, xscrollcommand=tree_hsb.set)
-    tree.grid(row=0, column=0, sticky="nsew"); tree_vsb.grid(row=0, column=1, sticky="ns"); tree_hsb.grid(row=1, column=0, columnspan=2, sticky="ew")
-    tree_frame.grid_rowconfigure(0, weight=1); tree_frame.grid_columnconfigure(0, weight=1)
+    tree.grid(row=0, column=0, sticky="nsew")
+    tree_vsb.grid(row=0, column=1, sticky="ns")
+    tree_hsb.grid(row=1, column=0, columnspan=2, sticky="ew")
 
-    right_top_frame = Frame(right_pane_container, height=350, bg="white"); right_top_frame.pack_propagate(False); right_pane_container.add(right_top_frame, stretch="never")
-    input_frame = Frame(right_top_frame, width=450, bg="#eaf4ff", bd=1, relief="sunken"); input_frame.grid_propagate(False); input_frame.pack(side=LEFT, fill=BOTH, expand=True, padx=(5, 2), pady=5)
-    output_frame = Frame(right_top_frame, width=450, bg="#ffffe0", bd=1, relief="sunken"); output_frame.grid_propagate(False); output_frame.pack(side=RIGHT, fill=BOTH, expand=True, padx=(2, 5), pady=5)
+    tree_frame.grid_rowconfigure(0, weight=1)
+    tree_frame.grid_columnconfigure(0, weight=1)
 
-    image_frame = Frame(right_pane_container, bg="white", bd=1, relief="groove"); right_pane_container.add(image_frame, stretch="always")
-    canvas = Canvas(image_frame, bg="#ffffff", highlightthickness=0); canvas.pack(fill=BOTH, expand=True, padx=5, pady=5)
+    right_top_frame = Frame(right_pane_container, height=350, bg="white")
+    right_top_frame.pack_propagate(False)
+    right_pane_container.add(right_top_frame, stretch="never")
 
-    root.grid_rowconfigure(0, weight=0); root.grid_rowconfigure(1, weight=1); root.grid_columnconfigure(0, weight=1)
+    input_frame = Frame(right_top_frame, width=450, bg="#eaf4ff", bd=1, relief="sunken")
+    input_frame.grid_propagate(False)
+    input_frame.pack(side=LEFT, fill=BOTH, expand=True, padx=(5, 2), pady=5)
+
+    output_frame = Frame(right_top_frame, width=450, bg="#ffffe0", bd=1, relief="sunken")
+    output_frame.grid_propagate(False)
+    output_frame.pack(side=RIGHT, fill=BOTH, expand=True, padx=(2, 5), pady=5)
+
+    image_frame = Frame(right_pane_container, bg="white", bd=1, relief="groove")
+    right_pane_container.add(image_frame, stretch="always")
+
+    canvas = Canvas(image_frame, bg="#ffffff", highlightthickness=0)
+    canvas.pack(fill=BOTH, expand=True, padx=5, pady=5)
+
+    root.grid_rowconfigure(0, weight=0)
+    root.grid_rowconfigure(1, weight=1)
+    root.grid_columnconfigure(0, weight=1)
+
+    # >>> NEW: load Excel data once at startup <<<
+    load_excel_data()
 
     if data.empty:
         tree.insert("", "end", text="Error: Excel data not loaded.")
