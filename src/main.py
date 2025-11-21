@@ -502,20 +502,29 @@ def store_inputs_and_calculate():
             except ValueError:
                 value_for_calc = raw_value_str  # Leave as-is if it's not numeric
         else:
-            try:
-                entered_value = float(raw_value_str)
-                label_text = ""
+            # --- FIX for A7H1 / A7H2: allow blank R or S ---
+            if (
+                raw_value_str == "" 
+                and current_duct_id in ("A7H1", "A7H2")
+                and standard_label_key in ("R (in)", "S (in)")
+            ):
+                value_for_calc = None   # <-- safe placeholder, UI untouched
+            else:
                 try:
-                    widget_index = input_widgets.index(entry_widget)
-                    if widget_index > 0 and isinstance(input_widgets[widget_index - 1], Label):
-                        label_text = input_widgets[widget_index - 1].cget("text")
-                except:
-                    pass
-                value_for_calc = converter.input_to_standard(label_text, entered_value)
-            except ValueError:
-                messagebox.showerror("Invalid Input", f"Invalid numeric input: {raw_value_str}")
-                entry_widget.focus_set()
-                return
+                    entered_value = float(raw_value_str)
+                    label_text = ""
+                    try:
+                        widget_index = input_widgets.index(entry_widget)
+                        if widget_index > 0 and isinstance(input_widgets[widget_index - 1], Label):
+                            label_text = input_widgets[widget_index - 1].cget("text")
+                    except:
+                        pass
+
+                    value_for_calc = converter.input_to_standard(label_text, entered_value)
+                except ValueError:
+                    messagebox.showerror("Invalid Input", f"Invalid numeric input: {raw_value_str}")
+                    entry_widget.focus_set()
+                    return
 
         calc_function_inputs[entry_key] = value_for_calc
         standard_label_values[standard_label_key] = value_for_calc
@@ -1355,6 +1364,34 @@ def update_inputs_and_outputs(duct_id):
             dynamic_widgets_ref = {}
             calculate_button = None
 
+            # --- Special coupling for A7A1 / A7A2 (R-S paired dropdowns) ---
+            special_rs_case = duct_id in ("A7A1", "A7A2")
+            rs_pairs = []
+            r_values_ordered = []
+            s_values_ordered = []
+            r_combo = None
+            s_combo = None
+
+            if special_rs_case:
+                try:
+                    # Build list of (R, S) pairs from dropdown 3 / dropdown 4 in Excel rows
+                    for _, row in duct_data_row.iterrows():
+                        rv = row.get("dropdown 3", np.nan)
+                        sv = row.get("dropdown 4", np.nan)
+                        if pd.notna(rv) and pd.notna(sv):
+                            r_val = str(rv).strip()
+                            s_val = str(sv).strip()
+                            rs_pairs.append((r_val, s_val))
+                    if rs_pairs:
+                        r_values_ordered = [p[0] for p in rs_pairs]
+                        s_values_ordered = [p[1] for p in rs_pairs]
+                    print(f"[DEBUG] A7A R/S pairs from Excel for {duct_id}: {rs_pairs}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to build R/S pairs for {duct_id}: {e}")
+                    rs_pairs = []
+                    r_values_ordered = []
+                    s_values_ordered = []
+
             def place_calculate_button(button_row):
                 nonlocal calculate_button
                 if calculate_button and calculate_button in input_widgets:
@@ -1461,6 +1498,7 @@ def update_inputs_and_outputs(duct_id):
                 grid_row_idx = dynamic_row
                 place_calculate_button(grid_row_idx)
 
+            # --- Build static inputs from Excel definition ---
             for idx, excel_col_name in enumerate(input_columns):
                 if excel_col_name in first_row and pd.notna(first_row[excel_col_name]):
                     input_label_standard = str(first_row[excel_col_name]).strip()
@@ -1483,11 +1521,31 @@ def update_inputs_and_outputs(duct_id):
                     dropdown_col_lookup = f"dropdown {idx + 1}"
                     dropdown_values = []
                     if dropdown_col_lookup in duct_data_row.columns:
-                        dropdown_values = [
-                            str(v).strip()
-                            for v in duct_data_row[dropdown_col_lookup].dropna().unique()
-                            if str(v).strip()
-                        ]
+                        col_series = duct_data_row[dropdown_col_lookup].dropna()
+
+                        # --- Special handling of R/S dropdowns for A7A1/A7A2 ---
+                        if (
+                            special_rs_case
+                            and dropdown_col_lookup == "dropdown 3"
+                            and input_label_standard.strip().upper().startswith("R")
+                            and r_values_ordered
+                        ):
+                            dropdown_values = list(r_values_ordered)
+                            print(f"[DEBUG] Using ordered R values for {duct_id}: {dropdown_values}")
+                        elif (
+                            special_rs_case
+                            and dropdown_col_lookup == "dropdown 4"
+                            and input_label_standard.strip().upper().startswith("S")
+                            and s_values_ordered
+                        ):
+                            dropdown_values = list(s_values_ordered)
+                            print(f"[DEBUG] Using ordered S values for {duct_id}: {dropdown_values}")
+                        else:
+                            dropdown_values = [
+                                str(v).strip()
+                                for v in col_series.unique()
+                                if str(v).strip()
+                            ]
 
                     current_widget = None
                     if dropdown_values:
@@ -1503,6 +1561,15 @@ def update_inputs_and_outputs(duct_id):
                         input_entries.append((combo, input_label_standard))
                         current_widget = combo
                         combo.standard_label_key = input_label_standard
+
+                        # Track R/S comboboxes for A7A1/A7A2
+                        if special_rs_case:
+                            label_upper = input_label_standard.strip().upper()
+                            if label_upper.startswith("R"):
+                                r_combo = combo
+                            elif label_upper.startswith("S"):
+                                s_combo = combo
+
                         if "obstruction type" in input_label_standard.lower():
                             print(
                                 f"[DEBUG] Binding dynamic update to dropdown: "
@@ -1535,6 +1602,45 @@ def update_inputs_and_outputs(duct_id):
 
                     grid_row_idx += 1
 
+            # --- Bind coupling behavior for A7A1/A7A2 R/S dropdowns ---
+            if special_rs_case and r_combo is not None and s_combo is not None:
+                if len(r_values_ordered) == len(s_values_ordered) and len(r_values_ordered) > 0:
+                    print(
+                        f"[DEBUG] Binding R/S coupling for {duct_id} "
+                        f"(n={len(r_values_ordered)} pairs)."
+                    )
+
+                    def on_r_selected(event):
+                        idx_sel = r_combo.current()
+                        if 0 <= idx_sel < len(s_values_ordered):
+                            try:
+                                s_combo.unbind("<<ComboboxSelected>>")
+                            except Exception:
+                                pass
+                            s_combo.current(idx_sel)
+                            # Re-bind S handler after programmatic update
+                            s_combo.bind("<<ComboboxSelected>>", on_s_selected)
+
+                    def on_s_selected(event):
+                        idx_sel = s_combo.current()
+                        if 0 <= idx_sel < len(r_values_ordered):
+                            try:
+                                r_combo.unbind("<<ComboboxSelected>>")
+                            except Exception:
+                                pass
+                            r_combo.current(idx_sel)
+                            # Re-bind R handler after programmatic update
+                            r_combo.bind("<<ComboboxSelected>>", on_r_selected)
+
+                    r_combo.bind("<<ComboboxSelected>>", on_r_selected)
+                    s_combo.bind("<<ComboboxSelected>>", on_s_selected)
+                else:
+                    print(
+                        f"[WARN] R/S value lists for {duct_id} are inconsistent; "
+                        f"coupling not applied. R list len={len(r_values_ordered)}, "
+                        f"S list len={len(s_values_ordered)}"
+                    )
+
             place_calculate_button(grid_row_idx)
             if input_entries:
                 input_entries[0][0].focus_set()
@@ -1566,23 +1672,48 @@ def update_inputs_and_outputs(duct_id):
 # --- Duct Map and Categories ---
 # (Your existing duct_map and categories_map - ensure images exist)
 duct_map = {
-    # Round > Elbows
     "A7A": {"case": "Smooth Radius (Die Stamped)", "image": "smooth_radius_90_deg.png"},
     "A7B": {"case": "3 to 5 Piece, 90°", "image": "3_to_5_piece_90_deg.png"},
     "A7C": {"case": "Mitered Round", "image": "mitered_round.png"},
-    "A7K": {"case": "30° Offset","image": "30_deg_offset.png"},
-    # Round > Transitions (Diverging Flow)
+    "A7D": {"case": "Mitered Rectangular", "image": "mitered_rectangular.png"},
+    "A7E": {"case": "Mitered, with Converging/Diverging Flow", "image": "mitered_with_converging_diverging_flow.png"},
+    "A7F": {"case": "Smooth Radius without Vanes, 90°", "image": "smooth_radius_without_vanes_90.png"},
+    "A7G": {"case": "Smooth Radius with Splitter Vanes", "image": "smooth_radius_with_splitter_vanes.png"},
+    "A7H1": {"case": "Mitered with Single Thickness Turning Vanes", "image": "mitered_with_single_thickness_turning_vanes.png"},
+    "A7H2": {"case": "Mitered with Double Thickness Turning Vanes", "image": "mitered_with_double_thickness_turning_vanes.png"},
+    "A7I": {"case": "Z-Shaped (W/H=1)", "image": "z_shaped.png"},
+    "A7J": {"case": "Different Planes", "image": "different_planes.png"},
+    "A7K": {"case": "30° Offset", "image": "30_deg_offset.png"},
+    "A7L": {"case": "Wye or Tee Shape", "image": "tee_wye_elbow.png"},
+
     "A8A": {"case": "Conical Expansion", "image": "conical_expansion.png"},
+    "A8B": {"case": "Pyramidal Expansion", "image": "pyramidal_expansion.png"},
     "A8C": {"case": "Round to Rectangular", "image": "round_to_rectangular_expansion.png"},
-    # Round > Transitions (Converging Flow)
+    "A8D": {"case": "Rectangular to Round", "image": "rectangular_to_round_expansion.png"},
+    "A8E": {"case": "Rectangular, Sides Straight", "image": "rectangular_sides_straight.png"},
+    "A8F": {"case": "Symmetric at Fan with Duct Sides Straight", "image": "symmetric_at_fan_with_duct_sides_straight.png"},
+    "A8G": {"case": "Asymmetric at Fan with Sides Straight, Top Level", "image": "asymmetric_at_fan_with_duct_sides_straight_top_level.png"},
+    "A8H": {"case": "Asymmetric at Fan with Sides Straight, Top 10° Down", "image": "asymmetric_at_fan_with_duct_sides_straight_top_10_down.png"},
+    "A8I": {"case": "Asymmetric at Fan with Sides Straight, Top 10° Up", "image": "asymmetric_at_fan_with_duct_sides_straight_top_10_up.png"},
+    "A8J": {"case": "Pyramidal at Fan with Duct", "image": "pyramidal_at_fan_with_duct.png"},
+
     "A9A1": {"case": "Conical Contraction", "image": "conical_contraction.png"},
+    "A9A2": {"case": "Pyramidal Contraction", "image": "pyramidal_contraction.png"},
     "A9B1": {"case": "Stepped Conical Contraction", "image": "stepped_conical_contraction.png"},
-    # Round > Converging Junctions (Tees, Wyes)
+    "A9B2": {"case": "Stepped Pyramidal Contraction", "image": "stepped_pyramidal_contraction.png"},
+    "A9C": {"case": "Rectangular Slot to Round", "image": "rectangular_slot_to_round.png"},
+
     "A10A1": {"case": "Round Converging Wye", "image": "round_converging_wye.png"},
     "A10B": {"case": "Converging Tee, 90°", "image": "round_converging_tee.png"},
+    "A10C": {"case": "Tee, Round Branch to Rectangular Main", "image": "converging_tee_round_branch_to_rect_main.png"},
+    "A10D": {"case": "Tee, Rectangular Main & Branch", "image": "converging_tee_rect_main_and_branch.png"},
     "A10E": {"case": "Converging Wye, Conical", "image": "round_converging_wye_conical.png"},
+    "A10F": {"case": "Tee, 45° Entry Branch to Rectangular Main", "image": "converging_tee_rect_45_entry_branch_to_main.png"},
+    "A10G": {"case": "Symmetrical Wye, Dovetail", "image": "rect_converging_wye_symmetrical_dovetail.png"},
+    "A10H": {"case": "Converging Rectangular Wye", "image": "converging_curved_wye_rect.png"},
     "A10I1": {"case": "Symmetrical Wye", "image": "round_converging_sym_wye.png"},
-    # Round > Diverging Junctions (Tees, Wyes)
+    "A10I2": {"case": "Symmetrical Wye", "image": "converging_rectangular_wye.png"},
+
     "A11A": {"case": "Tee or Wye, 30° to 90°", "image": "diverging_wye_30_to_90.png"},
     "A11B": {"case": "Conical Tee, 90°", "image": "diverging_conical_tee_90.png"},
     "A11C": {"case": "Conical Wye, 45°", "image": "diverging_conical_wye_45.png"},
@@ -1596,46 +1727,6 @@ duct_map = {
     "A11K": {"case": "45° Wye, Rolled 45° with 30° Elbow, Branch 45° to Main", "image": "diverging_wye_45_rolled45_30elbow_branch45.png"},
     "A11L": {"case": "45° Conical Wye, Rolled 45° with 30° Elbow, Branch 45° to Main", "image": "diverging_conical_wye_45_rolled45_30elbow_branch45.png"},
     "A11M": {"case": "45° Conical Main & Branch with 45° Elbow, Branch 90° to Main", "image": "diverging_conical_main_branch_45elbow_branch90.png"},
-    # Round > Entries
-    "A12A1": {"case": "Duct Mounted in Wall", "image": "entry_round_duct_mounted_in_wall.png"},
-    "A12B": {"case": "Smooth Converging Bellmouth, without End Wall", "image": "entry_round_smooth_converging_bellmouth_without_end_wall.png"},
-    "A12C": {"case": "Smooth Converging Bellmouth, with End Wall", "image": "entry_round_smooth_converging_bellmouth_with_end_wall.png"},
-    "A12D1": {"case": "Conical Converging Bellmouth, without End Wall", "image": "entry_round_conical_converging_bellmouth_without_end_wall.png"}, # CHECK FILENAME
-    "A12E1": {"case": "Conical Converging Bellmouth, with End Wall", "image": "entry_round_conical_converging_bellmouth_with_end_wall.png"}, # CHECK FILENAME
-    "A12F": {"case": "Intake Hood", "image": "entry_round_intake_hood.png"}, # CHECK FILENAME
-    "A12G": {"case": "Hood, Tapered, Flanged or Unflanged", "image": "entry_hood_tapered_flanged_unflanged.png"},
-
-    # Rectangular > Elbows
-    "A7D": {"case": "Mitered Rectangular", "image": "mitered_rectangular.png"},
-    "A7E": {"case": "Mitered, with Converging/Diverging Flow", "image": "mitered_with_converging_diverging_flow.png"},
-    "A7F": {"case": "Smooth Radius without Vanes, 90°", "image": "smooth_radius_without_vanes_90.png"},
-    "A7G": {"case": "Smooth Radius with Splitter Vanes", "image": "smooth_radius_with_splitter_vanes.png"},
-    "A7H1": {"case": "Mitered with Single Thickness Turning Vanes", "image": "mitered_with_single_thickness_turning_vanes.png"},
-    "A7H2": {"case": "Mitered with Double Thickness Turning Vanes", "image": "mitered_with_double_thickness_turning_vanes.png"},
-    "A7I": {"case": "Z-Shaped (W/H=1)", "image": "z_shaped.png"},
-    "A7J": {"case": "Different Planes", "image": "different_planes.png"},
-    "A7L": {"case": "Wye or Tee Shape", "image": "tee_wye_elbow.png"},
-    # Rectangular > Transitions (Diverging Flow)
-    "A8B": {"case": "Pyramidal Expansion", "image": "pyramidal_expansion.png"},
-    "A8D": {"case": "Rectangular to Round", "image": "rectangular_to_round_expansion.png"},
-    "A8E": {"case": "Rectangular, Sides Straight", "image": "rectangular_sides_straight.png"},
-    "A8F": {"case": "Symmetric at Fan with Duct Sides Straight", "image": "symmetric_at_fan_with_duct_sides_straight.png"},
-    "A8G": {"case": "Asymmetric at Fan with Sides Straight, Top Level", "image": "asymmetric_at_fan_with_duct_sides_straight_top_level.png"},
-    "A8H": {"case": "Asymmetric at Fan with Sides Straight, Top 10° Down", "image": "asymmetric_at_fan_with_duct_sides_straight_top_10_down.png"},
-    "A8I": {"case": "Asymmetric at Fan with Sides Straight, Top 10° Up", "image": "asymmetric_at_fan_with_duct_sides_straight_top_10_up.png"},
-    "A8J": {"case": "Pyramidal at Fan with Duct", "image": "pyramidal_at_fan_with_duct.png"},
-    # Rectangular > Transitions (Converging Flow)
-    "A9A2": {"case": "Pyramidal Contraction", "image": "pyramidal_contraction.png"},
-    "A9B2": {"case": "Stepped Pyramidal Contraction", "image": "stepped_pyramidal_contraction.png"},
-    "A9C": {"case": "Rectangular Slot to Round", "image": "rectangular_slot_to_round.png"},
-    # Rectangular > Converging Junctions (Tees, Wyes)
-    "A10C": {"case": "Tee, Round Branch to Rectangular Main", "image": "converging_tee_round_branch_to_rect_main.png"},
-    "A10D": {"case": "Tee, Rectangular Main & Branch", "image": "converging_tee_rect_main_and_branch.png"},
-    "A10F": {"case": "Tee, 45° Entry Branch to Rectangular Main", "image": "converging_tee_rect_45_entry_branch_to_main.png"},
-    "A10G": {"case": "Symmetrical Wye, Dovetail", "image": "rect_converging_wye_symmetrical_dovetail.png"},
-    "A10H": {"case": "Converging Rectangular Wye", "image": "converging_curved_wye_rect.png"},
-    "A10I2": {"case": "Symmetrical Wye", "image": "converging_rectangular_wye.png"},
-    # Rectangular > Diverging Junctions (Tees, Wyes)
     "A11N": {"case": "Tee, 45° Rectangular Main & Branch", "image": "diverging_tee_45entry_rect_main_and_branch.png"},
     "A11O": {"case": "Tee, 45° Entry, Rectangular Main & Branch with Damper", "image": "diverging_tee_45entry_rect_main_and_branch_with_damper.png"},
     "A11P": {"case": "Tee, Rectangular Main & Branch", "image": "diverging_tee_rect_main_and_branch.png"},
@@ -1648,16 +1739,59 @@ duct_map = {
     "A11W": {"case": "Symmetrical Wye, Dovetail", "image": "diverging_rect_wye_dovetail.png"},
     "A11X": {"case": "Symmetrical Wye", "image": "diverging_wye_symmetrical.png"},
     "A11Y": {"case": "Tee, Reducing, 45° Entry Branch", "image": "diverging_tee_rect_reducing_45entry_branch.png"},
-    # Rectangular > Entries
+
+    "A12A1": {"case": "Duct Mounted in Wall", "image": "entry_round_duct_mounted_in_wall.png"},
     "A12A2": {"case": "Duct Mounted in Wall", "image": "entry_rect_duct_mounted_in_wall.png"},
+    "A12B": {"case": "Smooth Converging Bellmouth, without End Wall", "image": "entry_round_smooth_converging_bellmouth_without_end_wall.png"},
+    "A12C": {"case": "Smooth Converging Bellmouth, with End Wall", "image": "entry_round_smooth_converging_bellmouth_with_end_wall.png"},
+    "A12D1": {"case": "Conical Converging Bellmouth, without End Wall", "image": "entry_round_conical_converging_bellmouth_without_end_wall.png"},
     "A12D2": {"case": "Smooth Converging Bellmouth, without End Wall", "image": "entry_rect_smooth_converging_bellmouth_without_end_wall.png"},
+    "A12E1": {"case": "Conical Converging Bellmouth, with End Wall", "image": "entry_round_conical_converging_bellmouth_with_end_wall.png"},
     "A12E2": {"case": "Smooth Converging Bellmouth, with End Wall", "image": "entry_rect_smooth_converging_bellmouth_with_end_wall.png"},
-    # Rectangular > Exits
+    "A12F": {"case": "Intake Hood", "image": "entry_round_intake_hood.png"},
+    "A12G": {"case": "Hood, Tapered, Flanged or Unflanged", "image": "entry_hood_tapered_flanged_unflanged.png"},
+
+    # --- A13 series (exits) ---
+
+    # Existing
     "A13A": {"case": "Rectangular Flat Exit", "image": "rect_flat_exit.png"},
     "A13C": {"case": "Rectangular Conical Exit with/without Wall", "image": "rect_conical_exit_with_without_wall.png"},
     "A13D": {"case": "Rectangular to Round Exit", "image": "rect_to_round_exit.png"},
     "A13E2": {"case": "Rectangular Slot Exit", "image": "rect_slot_exit.png"},
     "A13F1": {"case": "Rectangular to Round Conical Exit", "image": "rect_to_round_conical_exit.png"},
+
+    # New additions with placeholders
+    "A13B": {"case": "Case A13B", "image": "A13B.png"},
+    "A13E1": {"case": "Case A13E1", "image": "A13E1.png"},
+    "A13F2": {"case": "Case A13F2", "image": "A13F2.png"},
+    "A13G": {"case": "Case A13G", "image": "A13G.png"},
+    "A13H": {"case": "Case A13H", "image": "A13H.png"},
+    "A13I": {"case": "Case A13I", "image": "A13I.png"},
+    "A13J1": {"case": "Case A13J1", "image": "A13J1.png"},
+    "A13J2": {"case": "Case A13J2", "image": "A13J2.png"},
+
+    # --- A14 series (screens / perforated plates) ---
+
+    "A14A1": {"case": "Case A14A1", "image": "A14A1.png"},
+    "A14A2": {"case": "Case A14A2", "image": "A14A2.png"},
+    "A14B1": {"case": "Case A14B1", "image": "A14B1.png"},
+    "A14B2": {"case": "Case A14B2", "image": "A14B2.png"},
+
+    # --- A15 series (obstructions) ---
+
+    "A15A": {"case": "Case A15A", "image": "A15A.png"},
+    "A15B": {"case": "Case A15B", "image": "A15B.png"},
+    "A15C": {"case": "Case A15C", "image": "A15C.png"},
+    "A15D": {"case": "Case A15D", "image": "A15D.png"},
+    "A15E": {"case": "Case A15E", "image": "A15E.png"},
+    "A15F": {"case": "Case A15F", "image": "A15F.png"},
+    "A15G": {"case": "Case A15G", "image": "A15G.png"},
+    "A15H1": {"case": "Case A15H1", "image": "A15H1.png"},
+    "A15H2": {"case": "Case A15H2", "image": "A15H2.png"},
+    "A15I": {"case": "Case A15I", "image": "A15I.png"},
+    "A15J": {"case": "Case A15J", "image": "A15J.png"},
+    "A15K": {"case": "Case A15K", "image": "A15K.png"},
+    "A15L": {"case": "Case A15L", "image": "A15L.png"},
 }
 
 categories_map = {
@@ -1668,6 +1802,9 @@ categories_map = {
         "Converging Junctions (Tees, Wyes)": ["A10A1", "A10B", "A10E", "A10I1"],
         "Diverging Junctions (Tees, Wyes)": ["A11A", "A11B", "A11C", "A11D", "A11E", "A11F", "A11G", "A11H", "A11I", "A11J", "A11K", "A11L", "A11M"],
         "Entries": ["A12A1", "A12B", "A12C", "A12D1", "A12E1", "A12F", "A12G"],
+        "Exits": ["A13A", "A13B", "A13E1", "A13F2", "A13J1"],
+        "Screens and Perforated Plates": ["A14A1", "A14B1"],
+        "Obstructions": ["A15A", "A15C", "A15H1", "A15I"]
     },
     "Rectangular": {
         "Elbows": ["A7D", "A7E", "A7F", "A7G", "A7H1", "A7H2", "A7I", "A7J", "A7L"],
@@ -1676,8 +1813,22 @@ categories_map = {
         "Converging Junctions (Tees, Wyes)": ["A10C", "A10D", "A10F", "A10G", "A10H", "A10I2"],
         "Diverging Junctions (Tees, Wyes)": ["A11N", "A11O", "A11P", "A11Q", "A11R", "A11S", "A11T", "A11U", "A11V", "A11W", "A11X", "A11Y"],
         "Entries": ["A12A2", "A12D2", "A12E2"],
-        "Exits": ["A13A", "A13C", "A13D", "A13E2", "A13F1"]
+        "Exits": ["A13C", "A13D", "A13E2", "A13F1","A13G", "A13H", "A13I", "A13J2"],
+        "Screens and Perforated Plates": ["A14A2", "A14B2"],
+        "Obstructions": ["A15B", "A15D", "A15E", "A15F", "A15G", "A15H2", "A15J", "A15K", "A15L"]
     },
+}
+
+CATEGORY_SERIES_PREFIX = {
+    "Elbows": "A7 Series: ",
+    "Transitions (Diverging Flow)": "A8 Series: ",
+    "Transitions (Converging Flow)": "A9 Series: ",
+    "Converging Junctions (Tees, Wyes)": "A10 Series: ",
+    "Diverging Junctions (Tees, Wyes)": "A11 Series: ",
+    "Entries": "A12 Series: ",
+    "Exits": "A13 Series: ",
+    "Screens and Perforated Plates": "A14 Series: ",
+    "Obstructions": "A15 Series: ",
 }
 
 # --- Case plot configuration (for Details window) ---
@@ -2004,18 +2155,35 @@ if __name__ == "__main__":
 
     root.grid_rowconfigure(0, weight=0); root.grid_rowconfigure(1, weight=1); root.grid_columnconfigure(0, weight=1)
 
-    if data.empty: tree.insert("", "end", text="Error: Excel data not loaded.")
+    if data.empty:
+        tree.insert("", "end", text="Error: Excel data not loaded.")
     else:
-         for shape in sorted(categories_map.keys()):
-              shape_node = tree.insert("", "end", text=shape, open=False)
-              subcategories = categories_map[shape]
-              for category in sorted(subcategories.keys()):
-                  category_node = tree.insert(shape_node, "end", text=category, open=False)
-                  ids = subcategories[category]
-                  for duct_id in sorted(ids):
-                      if duct_id in duct_map:
-                          details = duct_map[duct_id]; tree.insert(category_node, "end", text=details["case"], values=(duct_id,))
-                      else: print(f"[WARN] Duct ID '{duct_id}' in categories_map but not in duct_map.")
+        # Preserve insertion order from categories_map (no sorting),
+        # and prepend "A## Series:" to each category label.
+        for shape, subcategories in categories_map.items():
+            shape_node = tree.insert("", "end", text=shape, open=False)
+
+            for category, ids in subcategories.items():
+                prefix = CATEGORY_SERIES_PREFIX.get(category, "")
+                category_label = f"{prefix}{category}"
+                category_node = tree.insert(
+                    shape_node, "end", text=category_label, open=False
+                )
+
+                for duct_id in ids:
+                    if duct_id in duct_map:
+                        details = duct_map[duct_id]
+                        tree.insert(
+                            category_node,
+                            "end",
+                            text=details["case"],
+                            values=(duct_id,),
+                        )
+                    else:
+                        print(
+                            f"[WARN] Duct ID '{duct_id}' in categories_map "
+                            f"but not in duct_map."
+                        )
 
     tree.bind("<<TreeviewSelect>>", on_tree_select)
     root.update_idletasks()
